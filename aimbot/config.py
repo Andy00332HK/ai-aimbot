@@ -11,15 +11,54 @@ CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
 
 MODEL_SIZES = ("n", "s")
 IMGSZ_CHOICES = (320, 416, 640)
-HOLD_KEY_CHOICES = ("shift", "ctrl", "alt", "caps_lock", "mouse_x1", "mouse_x2")
-HOLD_KEY_LABELS = {
-    "shift": "Shift",
-    "ctrl": "Ctrl",
-    "alt": "Alt",
-    "caps_lock": "Caps Lock",
-    "mouse_x1": "滑鼠側鍵 X1",
-    "mouse_x2": "滑鼠側鍵 X2",
+MOUSE_BUTTONS = ("left", "right", "middle", "x1", "x2")
+
+# 舊版 hold_key 值 → 新格式（kb:鍵名 / mouse:按鍵名）
+_LEGACY_HOLD = {
+    "shift": "kb:shift",
+    "ctrl": "kb:ctrl",
+    "alt": "kb:alt",
+    "caps_lock": "kb:caps_lock",
+    "mouse_x1": "mouse:x1",
+    "mouse_x2": "mouse:x2",
 }
+
+_KB_LABELS = {
+    "shift": "Shift", "ctrl": "Ctrl", "alt": "Alt", "space": "空白鍵",
+    "caps_lock": "Caps Lock", "tab": "Tab", "enter": "Enter",
+    "backspace": "Backspace", "delete": "Delete", "insert": "Insert",
+    "home": "Home", "end": "End", "page_up": "Page Up", "page_down": "Page Down",
+    "up": "↑", "down": "↓", "left": "←", "right": "→",
+}
+_MOUSE_LABELS = {
+    "left": "滑鼠左鍵", "right": "滑鼠右鍵", "middle": "滑鼠中鍵",
+    "x1": "滑鼠側鍵 X1", "x2": "滑鼠側鍵 X2",
+}
+
+
+def normalize_hold_key(k) -> str:
+    """把任意輸入正規化為合法 hold_key（kb:<name> / mouse:<button>）。"""
+    if not isinstance(k, str):
+        return "kb:shift"
+    k = k.strip().lower()
+    if k in _LEGACY_HOLD:
+        return _LEGACY_HOLD[k]
+    if k.startswith("kb:"):
+        name = k[3:]
+        ok = name and all(c.isalnum() or c == "_" for c in name)
+        return k if ok else "kb:shift"
+    if k.startswith("mouse:") and k[6:] in MOUSE_BUTTONS:
+        return k
+    return "kb:shift"
+
+
+def hold_key_label(k) -> str:
+    """啟動鍵的人類可讀標籤（面板顯示用）。"""
+    k = normalize_hold_key(k)
+    if k.startswith("mouse:"):
+        return _MOUSE_LABELS.get(k[6:], k)
+    name = k[3:]
+    return _KB_LABELS.get(name, name.upper())
 AIM_POINTS = ("head", "body")
 AIM_POINT_LABELS = {"head": "頭部", "body": "胸口"}
 
@@ -75,8 +114,7 @@ class Config:
             c = replace(c, aim_point="head")
         if c.activation_mode not in ("hold", "toggle"):
             c = replace(c, activation_mode="hold")
-        if c.hold_key not in HOLD_KEY_CHOICES:
-            c = replace(c, hold_key="shift")
+        c = replace(c, hold_key=normalize_hold_key(c.hold_key))
         return c
 
 

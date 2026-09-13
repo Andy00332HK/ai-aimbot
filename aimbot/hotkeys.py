@@ -1,10 +1,13 @@
-"""全域熱鍵（pynput）：鍵盤 + 滑鼠側鍵。
+"""全域熱鍵（pynput）：鍵盤任意鍵 + 滑鼠全部按鍵。
 
-- HOLD 模式：按住 hold_key（鍵盤鍵或滑鼠側鍵）時啟動
+- HOLD 模式：按住啟動鍵（config.hold_key，格式 kb:<鍵名> / mouse:<按鍵名>）
 - TOGGLE 模式：toggle_key 切換
 - aim_switch_key 切換頭/胸、quit_key 離開
 
-所有 UI 影響的回呼都透過 dispatcher（佇列）送到 Tk 主執行緒。
+啟動鍵比對：
+- 單字元（如 a）：比對 KeyCode.char
+- 修飾鍵（shift/ctrl/alt）：左右任一都算
+- 其他（f5、space…）：比對 Key.name
 """
 from __future__ import annotations
 
@@ -13,15 +16,25 @@ from typing import Callable
 
 from pynput import keyboard, mouse
 
-from .config import ConfigManager
+from .config import ConfigManager, normalize_hold_key
 
-# 鍵盤按住鍵 → pynput Key 名稱
-_HOLD_KEY_MAP = {
+# 修飾鍵的家族集合（左/右任一按下都算）
+_MOD_SETS = {
     "shift": {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r},
     "ctrl": {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r},
     "alt": {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r},
-    "caps_lock": {keyboard.Key.caps_lock},
 }
+
+
+def kb_key_matches(name: str, key) -> bool:
+    """kb:<name> 與 pynput 事件的比對。"""
+    if len(name) == 1:  # 單字元鍵（a-z 0-9 等）
+        ch = getattr(key, "char", None)
+        return ch is not None and ch.lower() == name
+    if getattr(key, "name", None) == name:
+        return True
+    mod = _MOD_SETS.get(name)
+    return mod is not None and key in mod
 
 
 class HotkeyManager:
@@ -38,21 +51,25 @@ class HotkeyManager:
         self._lock = threading.Lock()
 
     def start(self) -> None:
-        self._kb_listener = keyboard.Listener(
-            on_press=self._on_key_press, on_release=self._on_key_release)
-        self._kb_listener.daemon = True
-        self._kb_listener.start()
-        self._mouse_listener = mouse.Listener(on_click=self._on_mouse_click)
-        self._mouse_listener.daemon = True
-        self._mouse_listener.start()
+        with self._lock:
+            self._kb_listener = keyboard.Listener(
+                on_press=self._on_key_press, on_release=self._on_key_release)
+            self._kb_listener.daemon = True
+            self._kb_listener.start()
+            self._mouse_listener = mouse.Listener(on_click=self._on_mouse_click)
+            self._mouse_listener.daemon = True
+            self._mouse_listener.start()
 
     def stop(self) -> None:
-        for l in (self._kb_listener, self._mouse_listener):
-            if l is not None:
-                try:
-                    l.stop()
-                except Exception:
-                    pass
+        with self._lock:
+            for l in (self._kb_listener, self._mouse_listener):
+                if l is not None:
+                    try:
+                        l.stop()
+                    except Exception:
+                        pass
+            self._kb_listener = None
+            self._mouse_listener = None
 
     # ── 鍵盤 ──
     def _on_key_press(self, key) -> None:
@@ -71,26 +88,25 @@ class HotkeyManager:
                 return
         except Exception:
             pass
-        hold_set = _HOLD_KEY_MAP.get(cfg.hold_key)
-        if hold_set and key in hold_set:
+        hold = normalize_hold_key(cfg.hold_key)
+        if hold.startswith("kb:") and kb_key_matches(hold[3:], key):
             self.engine.set_hold_pressed(True)
 
     def _on_key_release(self, key) -> None:
         if self.engine is None:
             return
         cfg = self.cm.get()
-        hold_set = _HOLD_KEY_MAP.get(cfg.hold_key)
-        if hold_set and key in hold_set:
+        hold = normalize_hold_key(cfg.hold_key)
+        if hold.startswith("kb:") and kb_key_matches(hold[3:], key):
             self.engine.set_hold_pressed(False)
 
-    # ── 滑鼠側鍵 ──
+    # ── 滑鼠（左/右/中/側鍵皆可作啟動鍵） ──
     def _on_mouse_click(self, x, y, button, pressed) -> None:
         if self.engine is None:
             return
         cfg = self.cm.get()
-        is_x1 = button == mouse.Button.x1
-        is_x2 = button == mouse.Button.x2
-        if (cfg.hold_key == "mouse_x1" and is_x1) or (cfg.hold_key == "mouse_x2" and is_x2):
+        hold = normalize_hold_key(cfg.hold_key)
+        if hold.startswith("mouse:") and button.name == hold[6:]:
             self.engine.set_hold_pressed(pressed)
 
 

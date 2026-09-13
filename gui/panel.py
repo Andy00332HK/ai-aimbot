@@ -9,8 +9,8 @@ import tkinter as tk
 from tkinter import ttk
 
 from aimbot.capture import CAPTURE_BACKENDS, CAPTURE_BACKEND_LABELS
-from aimbot.config import (AIM_POINT_LABELS, HOLD_KEY_CHOICES, HOLD_KEY_LABELS,
-                           IMGSZ_CHOICES, MODEL_SIZES, ConfigManager)
+from aimbot.config import (AIM_POINT_LABELS, IMGSZ_CHOICES, MODEL_SIZES,
+                           ConfigManager, hold_key_label)
 from aimbot.engine import AimEngine
 
 BG = "#14161c"
@@ -46,12 +46,15 @@ class UiDispatcher:
 
 class ControlPanel:
     def __init__(self, root: tk.Tk, cm: ConfigManager, engine: AimEngine,
-                 dispatcher: UiDispatcher, on_quit):
+                 dispatcher: UiDispatcher, on_quit,
+                 suspend_hotkeys=None, resume_hotkeys=None):
         self.root = root
         self.cm = cm
         self.engine = engine
         self.disp = dispatcher
         self.on_quit = on_quit
+        self.suspend_hotkeys = suspend_hotkeys  # 擷取按鍵時暫停全域熱鍵，避免誤觸 F6-F8
+        self.resume_hotkeys = resume_hotkeys
         self._updating_ui = False  # 防止程式更新 UI 時觸發回寫
 
         root.title("AI Aimbot 控制台（僅限單機遊戲）")
@@ -148,11 +151,14 @@ class ControlPanel:
                         command=self._on_mode_change).pack(side="left", padx=(10, 0))
         key_row = ttk.Frame(c1, style="Card.TFrame")
         key_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(key_row, text="按住鍵").pack(side="left")
-        self.hold_key_combo = ttk.Combobox(key_row, state="readonly", width=14,
-                                           values=[HOLD_KEY_LABELS[k] for k in HOLD_KEY_CHOICES])
-        self.hold_key_combo.pack(side="left", padx=(10, 0))
-        self.hold_key_combo.bind("<<ComboboxSelected>>", self._on_hold_key_change)
+        ttk.Label(key_row, text="啟動鍵").pack(side="left")
+        self.hold_key_var = tk.StringVar(value="Shift")
+        ttk.Label(key_row, textvariable=self.hold_key_var,
+                  font=("Microsoft JhengHei UI", 10, "bold")).pack(side="left", padx=(10, 0))
+        ttk.Button(key_row, text="變更…", style="Small.TButton",
+                   command=self._open_key_capture).pack(side="left", padx=(10, 0))
+        ttk.Label(key_row, text="（鍵盤任意鍵或滑鼠左/右/中/側鍵）",
+                  style="Sub.TLabel").pack(side="left", padx=(8, 0))
         aim_row = ttk.Frame(c1, style="Card.TFrame")
         aim_row.pack(fill="x", pady=(6, 0))
         ttk.Label(aim_row, text="瞄準部位").pack(side="left")
@@ -286,15 +292,94 @@ class ControlPanel:
         self.cm.update(activation_mode=self.mode_var.get())
         self._refresh_hint()
 
-    def _on_hold_key_change(self, _evt=None):
-        idx = self.hold_key_combo.current()
-        self.cm.update(hold_key=HOLD_KEY_CHOICES[idx])
-
     def _on_aim_change(self):
         self.cm.update(aim_point=self.aim_var.get())
 
     def _on_sticky_change(self):
         self.cm.update(sticky_lock=bool(self.sticky_var.get()))
+
+    # ── 啟動鍵擷取對話框：按下任意鍵盤鍵或點擊滑鼠鍵即綁定 ──
+    def _open_key_capture(self):
+        import time as _time
+
+        from pynput import keyboard, mouse
+
+        if getattr(self, "_capturing", False):
+            return
+        self._capturing = True
+        if self.suspend_hotkeys:
+            self.suspend_hotkeys()
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("設定啟動鍵")
+        dlg.configure(bg=CARD)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        ttk.Label(dlg, text="請按下要綁定的按鍵\n鍵盤任意鍵，或點擊滑鼠左/右/中/側鍵",
+                  font=("Microsoft JhengHei UI", 11)).pack(padx=24, pady=(18, 6))
+        ttk.Label(dlg, style="Sub.TLabel",
+                  text="Esc 或點擊本視窗內＝取消",
+                  font=("Microsoft JhengHei UI", 9)).pack(pady=(0, 14))
+
+        state = {"done": False, "t0": _time.time()}
+        kb_l: list = [None]
+        ms_l: list = [None]
+
+        def finish(val: str | None):
+            if state["done"]:
+                return
+            state["done"] = True
+            for l in (kb_l[0], ms_l[0]):
+                if l is not None:
+                    try:
+                        l.stop()
+                    except Exception:
+                        pass
+            if self.resume_hotkeys:
+                self.resume_hotkeys()
+            self._capturing = False
+            dlg.destroy()
+            if val:
+                self.cm.update(hold_key=val)
+                self.hold_key_var.set(hold_key_label(val))
+                self._refresh_hint()
+
+        def in_dialog(x, y) -> bool:
+            x0, y0 = dlg.winfo_rootx(), dlg.winfo_rooty()
+            return x0 <= x <= x0 + dlg.winfo_width() and y0 <= y <= y0 + dlg.winfo_height()
+
+        # pynput 回呼在其執行緒 → 一律丟回 Tk 主執行緒
+        def on_key(key):
+            if state["done"] or _time.time() - state["t0"] < 0.25:
+                return
+            name = getattr(key, "name", None)
+            if not name:
+                ch = getattr(key, "char", None)
+                if ch and len(ch) == 1 and ch.isascii() and ch.isalnum():
+                    name = ch.lower()
+            # 左右修飾鍵正規化為 shift/ctrl/alt
+            name = {"shift_l": "shift", "shift_r": "shift",
+                    "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+                    "alt_l": "alt", "alt_r": "alt", "alt_gr": "alt"}.get(name, name)
+            if name == "esc":
+                self.disp.post(finish, None)
+            elif name:
+                self.disp.post(finish, f"kb:{name}")
+
+        def on_click(x, y, button, pressed):
+            if state["done"] or not pressed:
+                return
+            if _time.time() - state["t0"] < 0.25 or in_dialog(x, y):
+                return
+            self.disp.post(finish, f"mouse:{button.name}")
+
+        kb_l[0] = keyboard.Listener(on_press=on_key)
+        kb_l[0].daemon = True
+        kb_l[0].start()
+        ms_l[0] = mouse.Listener(on_click=on_click)
+        ms_l[0].daemon = True
+        ms_l[0].start()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: self.disp.post(finish, None))
 
     def _on_model_change(self, _evt=None):
         idx = self.model_combo.current()
@@ -334,7 +419,7 @@ class ControlPanel:
         self._updating_ui = True
         try:
             self.mode_var.set(cfg.activation_mode)
-            self.hold_key_combo.current(HOLD_KEY_CHOICES.index(cfg.hold_key))
+            self.hold_key_var.set(hold_key_label(cfg.hold_key))
             self.aim_var.set(cfg.aim_point)
             self.sticky_var.set(cfg.sticky_lock)
             self.model_combo.current(MODEL_SIZES.index(cfg.model_size))
@@ -356,7 +441,7 @@ class ControlPanel:
         cfg = self.cm.get()
         if cfg.activation_mode == "hold":
             self.big_hint.configure(
-                text=f"按住「{HOLD_KEY_LABELS[cfg.hold_key]}」或點上方按鈕即可啟動")
+                text=f"按住「{hold_key_label(cfg.hold_key)}」或點上方按鈕即可啟動")
         else:
             self.big_hint.configure(text="點上方按鈕或按 F6 切換開關")
 

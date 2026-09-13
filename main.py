@@ -73,7 +73,9 @@ def main() -> int:
     hotkeys = HotkeyManager(cm, on_quit=on_quit)
     hotkeys.engine = engine
 
-    panel = ControlPanel(root, cm, engine, dispatcher, on_quit=on_quit)
+    panel = ControlPanel(root, cm, engine, dispatcher, on_quit=on_quit,
+                         suspend_hotkeys=hotkeys.stop,
+                         resume_hotkeys=hotkeys.start)
 
     engine.start()
     hotkeys.start()
