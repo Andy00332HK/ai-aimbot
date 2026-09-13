@@ -14,8 +14,10 @@ from .capture import create_capture
 from .config import ConfigManager
 from .detector import Detection, Detector
 from .mouse import create_mouse
-from .targeting import (STICKY_LOST_FRAMES, AimController, OneEuroFilter,
-                        aim_point, one_euro_params, pick_target)
+from .targeting import (BODY_RATIO, HEAD_RATIO, REACQUIRE_FRAMES,
+                        REACQUIRE_IOU, STICKY_LOST_FRAMES, AimController,
+                        OneEuroFilter, aim_point, box_iou, one_euro_params,
+                        pick_target, reacquire_score)
 
 
 @dataclass
@@ -55,7 +57,9 @@ class AimEngine:
         self._thread: threading.Thread | None = None
         self._last_model_key: str = ""
         # 黏性鎖定狀態
-        self._locked_tid: int = -1          # 鎖定目標的 ByteTrack ID
+        self._locked_tid: int = -1          # 鎖定目標的持續 ID
+        self._kal_tid: int = -1             # Kalman 外推用的最後軌跡 ID（寬限期內保留）
+        self._reacquire: int = 0            # 重獲寬限計數（鎖框記憶保留期間）
         self._lock_box_prev: tuple[float, float, float, float] | None = None
         self._lock_last_pt: tuple[float, float] | None = None
         self._lock_last_conf: float = 0.0
@@ -80,28 +84,57 @@ class AimEngine:
         self._filter_tid = -2
         self._vel = [0.0, 0.0]
         self._lock_last_filtered = None
+        self._kal_tid = -1
+        self._reacquire = 0
         self._ctrl.reset()
 
     def _aim_step(self, cfg, raw_pt, tid: int, cx: float, cy: float,
                   dt: float) -> tuple[float, float]:
-        """1€ 濾波 → 速度估計與提前量 → 位移控制。
-        raw_pt=None 表示沿用最後已知的原始瞄準點（遺失容忍期）。回傳鎖定點。"""
-        raw_tx, raw_ty = self._lock_last_pt if raw_pt is None else raw_pt
-        if tid != self._filter_tid or self._fx is None:
-            # 換目標／剛啟動：重建濾波器（用新參數，抖動抑制可即時調）
-            mc, beta = one_euro_params(cfg.jitter_suppression)
-            self._fx = OneEuroFilter(mc, beta)
-            self._fy = OneEuroFilter(mc, beta)
-            fx = self._fx.filter(raw_tx, dt)
-            fy = self._fy.filter(raw_ty, dt)
-            self._vel = [0.0, 0.0]
+        """瞄準點估計 → 速度與提前量 → 位移控制。回傳鎖定點。
+
+        點/速度估計優先順序：
+          1. tracker 內建 Kalman（平滑位置+速度；閃斷時自動沿速度外推）
+          2. 1€ 濾波 + 幀間差分（tracker API 不可用時的回退）
+          3. 最後已知點沿速度外推（指數衰減，Kalman 也拿不到時）
+        """
+        ratio = HEAD_RATIO if cfg.aim_point == "head" else BODY_RATIO
+        kal = self.detector.track_state(tid) if tid is not None and tid >= 0 else None
+        if kal is not None:
+            kcx, kcy, kh, kvx, kvy = kal
+            fx = kcx
+            fy = kcy - kh / 2.0 + kh * ratio
+            if self._lock_last_filtered is not None and self._filter_tid == tid:
+                a = 0.5  # 輕度平滑 Kalman 速度，防狀態突跳
+                self._vel[0] += a * (kvx - self._vel[0])
+                self._vel[1] += a * (kvy - self._vel[1])
+            else:
+                self._vel = [kvx, kvy]
+            self._filter_tid = tid
+        elif raw_pt is not None:
+            raw_tx, raw_ty = raw_pt
+            if tid != self._filter_tid or self._fx is None:
+                # 換目標／剛啟動：重建濾波器（用新參數，抖動抑制可即時調）
+                mc, beta = one_euro_params(cfg.jitter_suppression)
+                self._fx = OneEuroFilter(mc, beta)
+                self._fy = OneEuroFilter(mc, beta)
+                fx = self._fx.filter(raw_tx, dt)
+                fy = self._fy.filter(raw_ty, dt)
+                self._vel = [0.0, 0.0]
+            else:
+                fx = self._fx.filter(raw_tx, dt)
+                fy = self._fy.filter(raw_ty, dt)
+                if dt > 0 and self._lock_last_filtered is not None:
+                    a = 0.4  # 速度 EMA
+                    self._vel[0] += a * ((fx - self._lock_last_filtered[0]) / dt - self._vel[0])
+                    self._vel[1] += a * ((fy - self._lock_last_filtered[1]) / dt - self._vel[1])
+            self._filter_tid = tid
         else:
-            fx = self._fx.filter(raw_tx, dt)
-            fy = self._fy.filter(raw_ty, dt)
-            if dt > 0 and self._lock_last_filtered is not None:
-                a = 0.4  # 速度 EMA
-                self._vel[0] += a * ((fx - self._lock_last_filtered[0]) / dt - self._vel[0])
-                self._vel[1] += a * ((fy - self._lock_last_filtered[1]) / dt - self._vel[1])
+            # 遺失容忍／重獲寬限：最後已知點沿速度外推（指數衰減防飛）
+            t_lost = self._lock_lost * dt
+            decay = 0.5 ** (t_lost / 0.25)
+            base_x, base_y = self._lock_last_pt
+            fx = base_x + self._vel[0] * t_lost * decay
+            fy = base_y + self._vel[1] * t_lost * decay
         self._lock_last_filtered = (fx, fy)
         # 提前量（速度前饋）：補償 (a) 感測→動作的管線延遲 與
         # (b) 指數收斂控制器追等速目標的穩態落後 v/k
@@ -232,38 +265,68 @@ class AimEngine:
                     target = None
                     aiming_last_known = False
                     if cfg.sticky_lock and self._locked_tid != -1:
-                        # 用 ByteTrack ID 找回鎖定目標（ID 跨幀持續，不受他人干擾）
+                        # 用持續 ID 找回鎖定目標（ID 跨幀持續，不受他人干擾）
                         target = next((d for d in dets
                                        if d.track_id == self._locked_tid), None)
                         if target is None:
                             if self._lock_lost < STICKY_LOST_FRAMES and \
                                     self._lock_last_pt is not None:
-                                # 遺失容忍期：持續拉向最後已知位置
+                                # 遺失容忍期：Kalman 沿速度外推，暫時偵測不到也咬住
                                 self._lock_lost += 1
                                 aiming_last_known = True
                             else:
-                                # 目標徹底消失 → 清鎖，下一段重新選最近
+                                # 容忍期耗盡 → 進入重獲寬限：清 ID 但保留鎖框記憶，
+                                # 優先找回原目標，而非讓鄰近敵人搶鎖
+                                # （_lock_lost 不清零：外推時間軸保持連續）
                                 self._locked_tid = -1
-                                self._lock_box_prev = None
-                                self._lock_lost = 0
+                                self._reacquire = 0
                     if aiming_last_known:
-                        lock_pt = self._aim_step(cfg, None, self._filter_tid,
+                        lock_pt = self._aim_step(cfg, None, self._kal_tid,
                                                  cx, cy, dt_loop)
                         lock_conf = self._lock_last_conf
                         lock_box = self._lock_box_prev
                     else:
-                        if target is None and dets:
+                        if target is None and dets and cfg.sticky_lock and \
+                                self._lock_box_prev is not None and \
+                                self._reacquire < REACQUIRE_FRAMES:
+                            # 重獲寬限：與上鎖框重疊越多越優先（防止鄰近敵人搶鎖）
+                            self._reacquire += 1
+                            self._lock_lost += 1  # 外推時間軸連續
+                            cand = min(dets, key=lambda d: reacquire_score(
+                                d, self._lock_box_prev, cx, cy))
+                            if box_iou(self._lock_box_prev,
+                                       (cand.x1, cand.y1,
+                                        cand.x2, cand.y2)) >= REACQUIRE_IOU:
+                                target = cand  # 原目標重新出現 → 立刻回鎖
+                            elif self._lock_last_pt is not None:
+                                aiming_last_known = True  # 寬限期內繼續外推
+                            if self._reacquire >= REACQUIRE_FRAMES:
+                                # 寬限耗盡 → 清除鎖定記憶，之後回歸「選最近」
+                                self._lock_box_prev = None
+                                self._kal_tid = -1
+                                self._lock_last_pt = None
+                                if target is None:
+                                    aiming_last_known = False
+                        if target is None and dets and not aiming_last_known:
                             target = pick_target(dets, cx, cy)
                         if target is not None:
                             raw_pt = aim_point(target, cfg.aim_point)
                             lock_pt = self._aim_step(
                                 cfg, raw_pt, target.track_id, cx, cy, dt_loop)
                             self._locked_tid = target.track_id if cfg.sticky_lock else -1
+                            self._kal_tid = target.track_id
                             self._lock_box_prev = (target.x1, target.y1, target.x2, target.y2)
                             self._lock_last_pt = raw_pt
                             self._lock_last_conf = target.conf
                             self._lock_lost = 0
+                            self._reacquire = 0
                             lock_conf = target.conf
+                            lock_box = self._lock_box_prev
+                        elif aiming_last_known:
+                            # 寬限期外推（Kalman 外推優先，回退速度衰減）
+                            lock_pt = self._aim_step(cfg, None, self._kal_tid,
+                                                     cx, cy, dt_loop)
+                            lock_conf = self._lock_last_conf
                             lock_box = self._lock_box_prev
 
                 dt = time.perf_counter() - t0

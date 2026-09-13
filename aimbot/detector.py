@@ -22,7 +22,7 @@ from .config import PROJECT_ROOT
 
 MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
 PERSON_CLASS_ID = 0  # COCO: person
-TRACKER_YAML = os.path.join(PROJECT_ROOT, "aimbot", "bytetrack.yaml")
+TRACKER_YAML = os.path.join(PROJECT_ROOT, "aimbot", "botsort.yaml")
 
 
 @dataclass(frozen=True)
@@ -169,6 +169,31 @@ class Detector:
                 dets.append(Detection(float(x1), float(y1), float(x2), float(y2),
                                       float(cf), tid))
         return dets
+
+    # ── Kalman 狀態（來自 tracker 內建的每軌跡濾波器） ──
+    def track_state(self, track_id: int) -> Optional[tuple]:
+        """取得指定軌跡的 Kalman 狀態 (cx, cy, h, vx, vy)。
+
+        ByteTrack/BoT-SORT 內部為每條軌跡維護 Kalman 濾波器；偵測閃斷時
+        丟失軌跡仍每幀被預測（位置沿速度外推），故鎖定中的目標即使
+        暫時偵測不到也能取得外推位置與平滑速度。
+        ultralytics 內部 API（新版為 predictor.trackers 列表，舊版為
+        predictor.tracker），任何變動/錯誤一律回傳 None（呼叫端回退）。"""
+        if self._model is None:
+            return None
+        try:
+            trackers = getattr(self._model.predictor, "trackers", None) or \
+                [self._model.predictor.tracker]
+            for tracker in trackers:
+                for t in (*tracker.tracked_stracks, *tracker.lost_stracks):
+                    if getattr(t, "track_id", None) != track_id:
+                        continue
+                    m = t.mean  # [cx, cy, aspect, h, vx, vy, va, vh]
+                    return (float(m[0]), float(m[1]), float(m[3]),
+                            float(m[4]), float(m[5]))
+        except Exception:
+            return None
+        return None
 
     # ── 執行期切換 ──
     def reload(self, model_size: str | None = None, imgsz: int | None = None,

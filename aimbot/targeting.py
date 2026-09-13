@@ -19,6 +19,10 @@ BODY_RATIO = 0.55   # 框頂往下 55% ≈ 胸口
 STICKY_LOST_FRAMES = 10   # 黏性鎖定：目標偵測中斷的容忍幀數（約 0.2 秒）
 STICKY_IOU_MIN = 0.2      # 前後幀視為同一目標的最小 IoU
 
+# 重獲寬限：鎖定完全丟失後，優先找回與上鎖框重疊的目標（防鄰近敵人搶鎖）
+REACQUIRE_FRAMES = 15     # 寬限幀數（約 0.3 秒）
+REACQUIRE_IOU = 0.05      # 與上鎖框 IoU ≥ 此值才視為「原目標重新出現」
+
 # AimController 內建常數（專家調校值，不暴露 UI）
 FINE_ZONE_PX = 15.0       # 細調區半徑：誤差小於此值降增益
 FINE_GAIN = 0.35          # 細調區增益倍率
@@ -63,6 +67,17 @@ def match_locked(dets: list[Detection],
             best_iou = v
             best = d
     return best
+
+
+def reacquire_score(det: Detection, prev_box: tuple[float, float, float, float],
+                    crosshair_x: float, crosshair_y: float) -> float:
+    """重獲評分（越小越好）：準心距離為主，與上鎖框重疊越多越優先。
+
+    用於鎖定完全丟失後的寬限期：優先找回「原目標」（即使它暫時被
+    鄰近敵人更靠近準心），IoU 除法項讓重疊者得分大幅下降。"""
+    dist = math.hypot(det.cx - crosshair_x, det.cy - crosshair_y)
+    iou = box_iou(prev_box, (det.x1, det.y1, det.x2, det.y2))
+    return dist / (0.25 + iou)
 
 
 def aim_point(det: Detection, mode: str) -> tuple[float, float]:
