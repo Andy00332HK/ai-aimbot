@@ -1,4 +1,4 @@
-"""滑鼠控制:雙後端注入工廠(仿 capture.py 的後端模式)。
+"""滑鼠控制：雙後端注入工廠（仿 capture.py 的後端模式）。
 
   - SendInput（Windows API）：標準注入，多數遊戲可直接接收，零額外依賴
   - Interception（驅動級）：以偵測到的真實滑鼠裝置身分送出位移，
@@ -84,6 +84,10 @@ class SendInputMouse(_MouseBase):
         _sendinput_move(idx, idy)
 
 
+class InterceptionUnavailable(Exception):
+    """Interception 後端初始化失敗（訊息為面板可直接顯示的原因）。"""
+
+
 class InterceptionMouse(_MouseBase):
     """Interception 驅動級注入：以真實硬體裝置身分送出相對位移。
 
@@ -95,17 +99,20 @@ class InterceptionMouse(_MouseBase):
     backend_name = "Interception"
 
     def __init__(self) -> None:
-        from interception import Interception, MouseFlag, MouseStroke
+        try:
+            from interception import Interception, MouseFlag, MouseStroke
+        except ImportError:
+            raise InterceptionUnavailable("未安裝 interception-python 套件") from None
 
         self._stroke = MouseStroke
         self._flag = MouseFlag.MOUSE_MOVE_RELATIVE
         self._ctx = Interception()
         if not self._ctx.valid:
-            raise RuntimeError("Interception 驅動未安裝（安裝後需重新開機）")
+            raise InterceptionUnavailable("驅動未安裝或尚未重新開機")
         dev = next((n for n in range(10, 20)
                     if self._ctx.devices[n].get_HWID() is not None), None)
         if dev is None:
-            raise RuntimeError("Interception 找不到已連接的滑鼠裝置")
+            raise InterceptionUnavailable("找不到已連接的滑鼠裝置")
         self._dev = dev
         self._ctx.mouse = dev
 
@@ -124,13 +131,17 @@ class InterceptionMouse(_MouseBase):
 
 
 def create_mouse(preferred: str = "auto") -> _MouseBase:
-    """依設定建立注入器；Interception 不可用時自動退回 SendInput。"""
+    """依設定建立注入器；Interception 不可用時退回 SendInput，
+    後端名稱標註失敗原因（顯示於面板狀態列，方便自查）。"""
     if preferred in ("auto", "interception"):
         try:
             return InterceptionMouse()
-        except Exception:
-            if preferred == "interception":
-                m = SendInputMouse()
-                m.backend_name = "SendInput（Interception 不可用）"
-                return m
+        except InterceptionUnavailable as e:
+            m = SendInputMouse()
+            m.backend_name = f"SendInput（Interception：{e}）"
+            return m
+        except Exception as e:
+            m = SendInputMouse()
+            m.backend_name = f"SendInput（Interception 載入失敗：{type(e).__name__}）"
+            return m
     return SendInputMouse()
