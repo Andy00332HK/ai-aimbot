@@ -1,4 +1,11 @@
-"""瞄準邏輯：目標選擇、瞄準點計算、平滑位移計算。"""
+"""瞄準邏輯：目標選擇、瞄準點計算、訊號濾波與平滑控制。
+
+控制模型（AimController）：
+- 幀率無關指數收斂：move = err × (1 − exp(−k·dt))，k = ln2/半衰期
+- 雙區增益：誤差小於細調區時降增益，消除終點震盪
+- 加速度限制：輸出速度變化率有上限，拉槍有自然的加減速
+- 次像素累積：小數位移留到下幀，準心能真正到點
+"""
 from __future__ import annotations
 
 import math
@@ -11,6 +18,12 @@ BODY_RATIO = 0.55   # 框頂往下 55% ≈ 胸口
 
 STICKY_LOST_FRAMES = 10   # 黏性鎖定：目標偵測中斷的容忍幀數（約 0.2 秒）
 STICKY_IOU_MIN = 0.2      # 前後幀視為同一目標的最小 IoU
+
+# AimController 內建常數（專家調校值，不暴露 UI）
+FINE_ZONE_PX = 15.0       # 細調區半徑：誤差小於此值降增益
+FINE_GAIN = 0.35          # 細調區增益倍率
+MAX_ACCEL_PX_S2 = 60000.0 # 輸出加速度上限 px/s²
+MAX_SPEED_PX_S = 8000.0   # 輸出速度安全上限 px/s
 
 
 def pick_target(dets: list[Detection], crosshair_x: float, crosshair_y: float) -> Optional[Detection]:
@@ -58,28 +71,105 @@ def aim_point(det: Detection, mode: str) -> tuple[float, float]:
     return det.cx, det.y1 + det.h * ratio
 
 
-def compute_move(
-    target_x: float,
-    target_y: float,
-    crosshair_x: float,
-    crosshair_y: float,
-    smoothing: float,
-    deadzone_px: float,
-    max_speed_px: float,
-    sensitivity: float,
-) -> tuple[float, float]:
-    """計算本幀滑鼠位移：每幀只移動誤差的一部分（smoothing），
-    誤差小於死區不動，位移上限 max_speed 防止瞬移。
-    """
-    err_x = target_x - crosshair_x
-    err_y = target_y - crosshair_y
-    if math.hypot(err_x, err_y) < deadzone_px:
-        return 0.0, 0.0
-    dx = err_x * smoothing * sensitivity
-    dy = err_y * smoothing * sensitivity
-    dist = math.hypot(dx, dy)
-    if dist > max_speed_px:
-        scale = max_speed_px / dist
-        dx *= scale
-        dy *= scale
-    return dx, dy
+def one_euro_params(suppression: float) -> tuple[float, float]:
+    """抖動抑制滑桿（0–1）→ 1€ 濾波器參數（min_cutoff, beta）。
+    0 = 幾乎不濾波；1 = 最強除抖。對數內插。"""
+    s = min(1.0, max(0.0, float(suppression)))
+    min_cutoff = 30.0 * (0.4 / 30.0) ** s
+    beta = 1.0 * (0.007 / 1.0) ** s
+    return min_cutoff, beta
+
+
+class OneEuroFilter:
+    """1€ 濾波器（Casiez & Roussel, CHI 2012）：速度自適應低通濾波。
+    訊號靜止時強力除抖、快移時低延遲。每軸一個實例。"""
+
+    def __init__(self, min_cutoff: float = 1.0, beta: float = 0.02,
+                 d_cutoff: float = 1.0):
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self._freq = 60.0
+        self._x_prev: Optional[float] = None
+        self._dx_prev = 0.0
+
+    @staticmethod
+    def _alpha(cutoff: float, freq: float) -> float:
+        tau = 1.0 / (2.0 * math.pi * cutoff)
+        te = 1.0 / freq
+        return 1.0 / (1.0 + tau / te)
+
+    def filter(self, x: float, dt: float) -> float:
+        if dt <= 0:
+            return self._x_prev if self._x_prev is not None else x
+        self._freq = 1.0 / dt
+        if self._x_prev is None:
+            self._x_prev = x
+            self._dx_prev = 0.0
+            return x
+        dx = (x - self._x_prev) * self._freq
+        a_d = self._alpha(self.d_cutoff, self._freq)
+        edx = self._dx_prev + a_d * (dx - self._dx_prev)
+        self._dx_prev = edx
+        cutoff = self.min_cutoff + self.beta * abs(edx)
+        a = self._alpha(cutoff, self._freq)
+        self._x_prev += a * (x - self._x_prev)
+        return self._x_prev
+
+
+class AimController:
+    """幀率無關的瞄準位移控制器（僅在 engine 執行緒使用）。"""
+
+    def __init__(self):
+        self._remain = [0.0, 0.0]     # 次像素殘差累積
+        self._last_vel = [0.0, 0.0]   # 上幀輸出速度（加速度限制用）
+        self.reset()
+
+    def reset(self) -> None:
+        self._remain = [0.0, 0.0]
+        self._last_vel = [0.0, 0.0]
+
+    def compute(self, err_x: float, err_y: float, dt: float,
+                half_life_s: float, deadzone_px: float,
+                sensitivity: float = 1.0) -> tuple[int, int]:
+        """回傳本幀滑鼠位移（整數 mickey，已含次像素累積與倍率）。"""
+        if dt <= 0:
+            return 0, 0
+        dist = math.hypot(err_x, err_y)
+        if dist < deadzone_px:
+            self._remain = [0.0, 0.0]  # 進死區：清殘差避免爆量
+            self._last_vel = [0.0, 0.0]
+            return 0, 0
+        # 幀率無關指數收斂
+        k = math.log(2.0) / max(half_life_s, 1e-3)
+        alpha = 1.0 - math.exp(-k * dt)
+        # 雙區增益：細調區降增益防終點震盪
+        if dist < FINE_ZONE_PX:
+            alpha *= FINE_GAIN
+        vx, vy = err_x * alpha, err_y * alpha
+        # 加速度限制
+        max_dv = MAX_ACCEL_PX_S2 * dt
+        for i in range(2):
+            v, lv = (vx, vy)[i], self._last_vel[i]
+            dv = v - lv
+            if abs(dv) > max_dv:
+                v = lv + math.copysign(max_dv, dv)
+            if i == 0:
+                vx = v
+            else:
+                vy = v
+        self._last_vel = [vx, vy]
+        # 速度安全上限
+        speed = math.hypot(vx, vy)
+        cap = MAX_SPEED_PX_S * dt
+        if speed > cap:
+            vx *= cap / speed
+            vy *= cap / speed
+        # 次像素累積 + 靈敏度倍率
+        out = []
+        for i, v in enumerate((vx, vy)):
+            total = v * sensitivity + self._remain[i]
+            iv = int(round(total))
+            self._remain[i] = total - iv
+            out.append(iv)
+        return out[0], out[1]

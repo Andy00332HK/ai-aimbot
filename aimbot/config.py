@@ -81,8 +81,9 @@ class Config:
     # ── 瞄準 ──
     aim_point: str = "head"        # head = 框頂+20% / body = 框頂+55%
     sticky_lock: bool = True       # 黏性鎖定：多人時鎖住同一目標不跳
-    smoothing: float = 0.45        # 每幀移動誤差比例 0.05–1.0
-    max_speed_px: float = 60.0     # 單幀最大位移 px
+    half_life_ms: int = 55          # 收斂半衰期：誤差減半所需時間，越小拉越快
+    jitter_suppression: float = 0.35  # 1€ 濾波強度 0–1：目標點除抖
+    aim_prediction: float = 0.7    # 提前量 0–1：補償延遲與控制器落後的提前瞄
     deadzone_px: float = 2.0       # 誤差小於此值不移動（防抖）
     sensitivity: float = 1.0       # 滑鼠位移倍率
     # ── 啟動 ──
@@ -105,8 +106,9 @@ class Config:
             confidence=min(0.95, max(0.05, float(c.confidence))),
             roi_size=int(min(1200, max(320, c.roi_size))),
             grid_cells=int(min(24, max(2, c.grid_cells))),
-            smoothing=min(1.0, max(0.05, float(c.smoothing))),
-            max_speed_px=min(400.0, max(10.0, float(c.max_speed_px))),
+            half_life_ms=int(min(300, max(20, int(c.half_life_ms)))),
+            jitter_suppression=min(1.0, max(0.0, float(c.jitter_suppression))),
+            aim_prediction=min(1.0, max(0.0, float(c.aim_prediction))),
             deadzone_px=min(30.0, max(0.0, float(c.deadzone_px))),
             sensitivity=min(3.0, max(0.2, float(c.sensitivity))),
         )

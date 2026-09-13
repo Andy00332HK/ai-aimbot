@@ -229,9 +229,13 @@ class ControlPanel:
         ttk.Checkbutton(c4, text="黏性鎖定（多人時鎖住同一目標不跳）",
                         variable=self.sticky_var, style="Card.TCheckbutton",
                         command=self._on_sticky_change).pack(fill="x")
-        self._add_slider(c4, "平滑度", "smoothing", 0.05, 1.0, 0.05, fmt="{:.2f}")
+        self._add_slider(c4, "收斂半衰期(ms)・越小拉越快", "half_life_ms", 20, 300, 10,
+                         fmt="{:.0f}")
+        self._add_slider(c4, "抖動抑制", "jitter_suppression", 0.0, 1.0, 0.05,
+                         fmt="{:.0%}")
+        self._add_slider(c4, "提前量（移動目標）", "aim_prediction", 0.0, 1.0, 0.05,
+                         fmt="{:.0%}")
         self._add_slider(c4, "滑鼠靈敏度", "sensitivity", 0.2, 3.0, 0.1, fmt="{:.1f}")
-        self._add_slider(c4, "單幀最大位移(px)", "max_speed_px", 10, 200, 10, fmt="{:.0f}")
 
         # ── 即時狀態 ──
         c5 = self._card(self.root, "即時狀態")
