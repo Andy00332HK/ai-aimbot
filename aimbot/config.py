@@ -92,6 +92,7 @@ class Config:
     toggle_key: str = "f6"
     aim_switch_key: str = "f7"
     quit_key: str = "f8"
+    diag_key: str = "f9"           # 輸入診斷（遊戲內按）
 
     def sanitized(self) -> "Config":
         """夾限所有數值到合法範圍，未知列舉回退預設。"""

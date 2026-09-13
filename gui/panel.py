@@ -252,6 +252,15 @@ class ControlPanel:
             self.stat_labels[name] = v
         self.error_label = ttk.Label(c5, text="", foreground=ACCENT, background=CARD)
         self.error_label.pack(fill="x", pady=(4, 0))
+        # 輸入診斷
+        diag_row = ttk.Frame(c5, style="Card.TFrame")
+        diag_row.pack(fill="x", pady=(6, 0))
+        self.diag_label = ttk.Label(diag_row, text="輸入診斷：遊戲內按 F9",
+                                    style="Sub.TLabel", wraplength=330,
+                                    justify="left")
+        self.diag_label.pack(side="left", fill="x", expand=True)
+        ttk.Button(diag_row, text="F9", style="Small.TButton", width=5,
+                   command=self._on_diag).pack(side="right")
 
         # ── 底部按鈕 ──
         bottom = ttk.Frame(self.root)
@@ -413,6 +422,9 @@ class ControlPanel:
     def _on_big_btn(self):
         self.engine.toggle_active()
 
+    def _on_diag(self):
+        self.engine.request_diagnostic()
+
     def _on_reset(self):
         cfg = self.cm.reset()
         self._load_from_config()
@@ -472,4 +484,9 @@ class ControlPanel:
         self.stat_labels["鎖定信心"].configure(
             text=f"{st.lock_conf:.2f}" if st.lock_conf else "—")
         self.error_label.configure(text=st.error)
+        diag = st.diag_message or "輸入診斷：遊戲內按 F9"
+        self.diag_label.configure(
+            text=diag,
+            foreground=(ACCENT_OFF if "✓" in diag
+                        else ACCENT if "✗" in diag else SUBTLE))
         self.root.after(250, self._refresh_stats)

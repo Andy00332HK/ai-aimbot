@@ -32,6 +32,7 @@ class EngineState:
     active: bool = False
     backend: str = "載入中…"
     capture_backend: str = "載入中…"
+    diag_message: str = "輸入診斷：遊戲內按 F9（畫面需可轉視角）"
     aim_point_mode: str = "head"
     model_ready: bool = False
     error: str = ""
@@ -65,6 +66,11 @@ class AimEngine:
         self._lock_last_filtered: tuple[float, float] | None = None
         self._ctrl = AimController()
         self._t_prev: float = 0.0           # 上幀時間（dt 量測）
+        self._diag_requested = threading.Event()
+
+    def request_diagnostic(self) -> None:
+        """F9／面板按鈕：請求輸入診斷（在引擎執行緒內執行，暫停瞄準約 1.5 秒）。"""
+        self._diag_requested.set()
 
     def _reset_aim_filters(self) -> None:
         self._fx = None
@@ -162,6 +168,21 @@ class AimEngine:
                 dt_loop = now - self._t_prev if self._t_prev > 0 else 1.0 / 60.0
                 self._t_prev = now
                 dt_loop = min(dt_loop, 0.2)
+                # 輸入診斷（在引擎執行緒內執行：不與瞄準競爭滑鼠）
+                if self._diag_requested.is_set():
+                    self._diag_requested.clear()
+                    self.state = replace(
+                        self.state,
+                        diag_message="輸入診斷進行中…（會小幅轉動視角後轉回）")
+                    try:
+                        from .diagnostic import format_result, run_input_diagnostic
+                        res = run_input_diagnostic(
+                            self.capture.grab,
+                            lambda dx, dy: self.mouse.move_relative(dx, dy))
+                        msg = format_result(res)
+                    except Exception as e:
+                        msg = f"診斷失敗：{type(e).__name__}: {e}"
+                    self.state = replace(self.state, diag_message=msg)
                 # 擷取後端切換（面板下拉）→ 重建擷取器
                 if cfg.capture_backend != self._capture_pref:
                     self._capture_pref = cfg.capture_backend

@@ -86,6 +86,9 @@ class HotkeyManager:
             if key == _fn_key(cfg.aim_switch_key):
                 self.engine.switch_aim_point()
                 return
+            if key == _fn_key(cfg.diag_key):
+                self.engine.request_diagnostic()
+                return
         except Exception:
             pass
         hold = normalize_hold_key(cfg.hold_key)
