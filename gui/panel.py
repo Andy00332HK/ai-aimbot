@@ -117,10 +117,25 @@ class ControlPanel:
 
     # ── UI 建構 ──
     def _build(self):
+        # 可捲動容器：內容放進 self.body，視窗高度超過 85% 螢幕時出現捲軸
+        self.canvas = tk.Canvas(self.root, bg=BG, highlightthickness=0, bd=0)
+        vbar = ttk.Scrollbar(self.root, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.body = ttk.Frame(self.canvas)
+        self._body_win = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind("<Configure>",
+                       lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>",
+                         lambda e: self.canvas.itemconfigure(self._body_win, width=e.width))
+        self.root.bind_all("<MouseWheel>", self._on_wheel)
+
         pad = {"fill": "x", "padx": 12, "pady": (6, 0)}
+        parent = self.body
 
         # 狀態列
-        status_row = ttk.Frame(self.root, style="Card.TFrame")
+        status_row = ttk.Frame(parent, style="Card.TFrame")
         status_row.pack(**pad)
         self.dot = tk.Canvas(status_row, width=12, height=12, bg=BG, highlightthickness=0)
         self.dot.pack(side="left")
@@ -130,15 +145,15 @@ class ControlPanel:
         self.backend_label.pack(side="right")
 
         # 大按鈕
-        self.big_btn = ttk.Button(self.root, text="▶  啟動輔助瞄準",
+        self.big_btn = ttk.Button(parent, text="▶  啟動輔助瞄準",
                                   style="Start.TButton", command=self._on_big_btn)
         self.big_btn.pack(fill="x", padx=12, pady=8, ipady=6)
-        self.big_hint = ttk.Label(self.root, text="", style="Sub.TLabel",
+        self.big_hint = ttk.Label(parent, text="", style="Sub.TLabel",
                                   font=("Microsoft JhengHei UI", 9))
         self.big_hint.pack(fill="x", padx=14)
 
         # ── 啟動設定 ──
-        c1 = self._card(self.root, "啟動設定")
+        c1 = self._card(parent, "啟動設定")
         c1.pack(**pad)
         mode_row = ttk.Frame(c1, style="Card.TFrame")
         mode_row.pack(fill="x")
@@ -170,7 +185,7 @@ class ControlPanel:
         ttk.Label(aim_row, text="（熱鍵 F7 即時切換）", style="Sub.TLabel").pack(side="left", padx=(6, 0))
 
         # ── 偵測設定 ──
-        c2 = self._card(self.root, "偵測設定")
+        c2 = self._card(parent, "偵測設定")
         c2.pack(**pad)
         model_row = ttk.Frame(c2, style="Card.TFrame")
         model_row.pack(fill="x")
@@ -196,7 +211,7 @@ class ControlPanel:
                          fmt="{:.2f}")
 
         # ── 掃描範圍與顯示 ──
-        c3 = self._card(self.root, "掃描範圍與顯示")
+        c3 = self._card(parent, "掃描範圍與顯示")
         c3.pack(**pad)
         self._add_slider(c3, "掃描範圍 ROI(px)", "roi_size", 320, 1000, 20,
                          fmt="{:.0f}")
@@ -223,7 +238,7 @@ class ControlPanel:
                         command=self._on_show_overlay_change).pack(side="left", padx=(14, 0))
 
         # ── 瞄準手感 ──
-        c4 = self._card(self.root, "瞄準手感")
+        c4 = self._card(parent, "瞄準手感")
         c4.pack(**pad)
         self.sticky_var = tk.BooleanVar()
         ttk.Checkbutton(c4, text="黏性鎖定（多人時鎖住同一目標不跳）",
@@ -238,7 +253,7 @@ class ControlPanel:
         self._add_slider(c4, "滑鼠靈敏度", "sensitivity", 0.2, 3.0, 0.1, fmt="{:.1f}")
 
         # ── 即時狀態 ──
-        c5 = self._card(self.root, "即時狀態")
+        c5 = self._card(parent, "即時狀態")
         c5.pack(**pad)
         stats = ttk.Frame(c5, style="Card.TFrame")
         stats.pack(fill="x")
@@ -263,17 +278,35 @@ class ControlPanel:
                    command=self._on_diag).pack(side="right")
 
         # ── 底部按鈕 ──
-        bottom = ttk.Frame(self.root)
+        bottom = ttk.Frame(parent)
         bottom.pack(fill="x", padx=12, pady=10)
         ttk.Button(bottom, text="還原預設", style="Small.TButton",
                    command=self._on_reset).pack(side="left")
         ttk.Button(bottom, text="離開", style="Small.TButton",
                    command=self.on_quit).pack(side="right")
-        ttk.Label(self.root, text="⚠ 僅供單機／離線遊戲使用，請勿用於任何連線遊戲",
+        ttk.Label(parent, text="⚠ 僅供單機／離線遊戲使用，請勿用於任何連線遊戲",
                   foreground="#c7a15a", background=BG,
                   font=("Microsoft JhengHei UI", 9)).pack(fill="x", padx=14, pady=(0, 8))
 
         self._load_from_config()
+        self.root.after(50, self._cap_window_height)
+
+    def _on_wheel(self, event):
+        """滾輪捲動面板；Combobox 保留自己的滾輪行為（改變選取）。"""
+        w = self.root.winfo_containing(event.x_root, event.y_root)
+        if w is not None and w.winfo_class() in ("TCombobox", "TSpinbox"):
+            return
+        self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
+
+    def _cap_window_height(self):
+        """高度=內容高度，超過 85% 螢幕時鎖高（此時可捲動）。"""
+        self.root.update_idletasks()
+        bbox = self.canvas.bbox("all")
+        content_h = bbox[3] if bbox else 400
+        desired = content_h + 10
+        h = min(desired, int(self.root.winfo_screenheight() * 0.85))
+        w = self.body.winfo_reqwidth() + 40  # 內容寬 + 捲軸與邊距
+        self.root.geometry(f"{w}x{h}")
 
     def _add_slider(self, parent, label, cfg_name, from_, to, res, fmt):
         row = ttk.Frame(parent, style="Card.TFrame")
