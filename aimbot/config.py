@@ -12,6 +12,12 @@ CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
 MODEL_SIZES = ("n", "s")
 IMGSZ_CHOICES = (320, 416, 640)
 MOUSE_BUTTONS = ("left", "right", "middle", "x1", "x2")
+MOUSE_BACKENDS = ("auto", "sendinput", "interception")
+MOUSE_BACKEND_LABELS = {
+    "auto": "自動（Interception 優先）",
+    "sendinput": "SendInput（標準）",
+    "interception": "Interception（驅動級）",
+}
 
 # 舊版 hold_key 值 → 新格式（kb:鍵名 / mouse:按鍵名）
 _LEGACY_HOLD = {
@@ -86,6 +92,7 @@ class Config:
     aim_prediction: float = 0.7    # 提前量 0–1：補償延遲與控制器落後的提前瞄
     deadzone_px: float = 2.0       # 誤差小於此值不移動（防抖）
     sensitivity: float = 1.0       # 滑鼠位移倍率
+    mouse_backend: str = "auto"    # auto / sendinput / interception（滑鼠輸入注入方式）
     # ── 啟動 ──
     activation_mode: str = "hold"  # hold / toggle
     hold_key: str = "shift"        # 見 HOLD_KEY_CHOICES
@@ -101,6 +108,8 @@ class Config:
             c = replace(c, model_size="n")
         if c.capture_backend not in ("auto", "dxcam", "mss"):
             c = replace(c, capture_backend="auto")
+        if c.mouse_backend not in MOUSE_BACKENDS:
+            c = replace(c, mouse_backend="auto")
         c = replace(c, imgsz=min(IMGSZ_CHOICES, key=lambda v: abs(v - c.imgsz)))
         c = replace(
             c,

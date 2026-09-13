@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, replace
 from .capture import create_capture
 from .config import ConfigManager
 from .detector import Detection, Detector
-from .mouse import MouseController
+from .mouse import create_mouse
 from .targeting import (STICKY_LOST_FRAMES, AimController, OneEuroFilter,
                         aim_point, one_euro_params, pick_target)
 
@@ -32,6 +32,7 @@ class EngineState:
     active: bool = False
     backend: str = "載入中…"
     capture_backend: str = "載入中…"
+    mouse_backend: str = "載入中…"
     diag_message: str = "輸入診斷：遊戲內按 F9（畫面需可轉視角）"
     aim_point_mode: str = "head"
     model_ready: bool = False
@@ -45,7 +46,8 @@ class AimEngine:
         self.capture = None
         self._capture_pref = "auto"
         self.detector = Detector()
-        self.mouse = MouseController()
+        self._mouse_pref = self.cm.get().mouse_backend
+        self.mouse = create_mouse(self._mouse_pref)
         # 啟動控制
         self._hold_pressed = threading.Event()   # 實體按住鍵
         self._latch = threading.Event()          # 面板大按鈕／F6 的鎖定狀態
@@ -189,6 +191,11 @@ class AimEngine:
                     self.capture.close()
                     self.capture = create_capture(cfg.roi_size,
                                                    preferred=cfg.capture_backend)
+                # 注入後端切換（面板下拉）→ 重建注入器
+                if cfg.mouse_backend != self._mouse_pref:
+                    self._mouse_pref = cfg.mouse_backend
+                    self.mouse.close()
+                    self.mouse = create_mouse(cfg.mouse_backend)
                 # ROI 即時調整
                 if self.capture.roi_size != cfg.roi_size:
                     self.capture.configure(cfg.roi_size)
@@ -273,6 +280,7 @@ class AimEngine:
                     active=active,
                     backend=self.detector.backend,
                     capture_backend=self.capture.backend_name,
+                    mouse_backend=self.mouse.backend_name,
                     aim_point_mode=cfg.aim_point,
                     model_ready=self.detector._model is not None,
                     error="",

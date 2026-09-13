@@ -56,6 +56,7 @@
 | **黏性鎖定** | ByteTrack 持續 ID 鎖定同一目標；偵測閃斷約 0.2 秒內持續拉向最後已知位置，不跳目標 | 多人近戰建議開啟 |
 | **模型** | 快速(n)／精準(s) | RTX 4060 用 s 也綽綽有餘 |
 | **擷取後端** | dxcam（200+ FPS 低延遲）／mss（相容備援）／自動 | 自動即可，異常再換 mss |
+| **注入後端** | SendInput（標準注入）／Interception（驅動級，以真實滑鼠身分送出）／自動 | 預設自動；遊戲過濾注入輸入時才需裝驅動用 Interception（安裝方式見常見問題） |
 | **推論尺寸** | 320 / 416 / 640 | 越小越快；640 最準 |
 | **掃描範圍 ROI** | 螢幕中央偵測區邊長 | 越小越快、越專注近距離目標 |
 | **偵測門檻** | 信心度下限 | 0.4–0.5；誤偵測多就調高 |
@@ -73,10 +74,11 @@
 ├── config.json          # 設定（面板自動讀寫）
 ├── aimbot/
 │   ├── config.py        # 設定管理（範圍驗證、執行緒安全）
-│   ├── capture.py       # mss 螢幕中央 ROI 擷取
+│   ├── capture.py       # 螢幕擷取（dxcam 低延遲 + mss 備援，自動降級）
 │   ├── detector.py      # YOLO11 載入 + TensorRT 匯出 + 後端降級
 │   ├── targeting.py     # 目標選擇 / 瞄準點 / 平滑位移
-│   ├── mouse.py         # SendInput 相對移動（純 ctypes）
+│   ├── mouse.py         # 滑鼠注入工廠（SendInput / Interception 驅動級）
+│   ├── diagnostic.py    # 輸入診斷（F9：驗證輸入到達 + 量測增益）
 │   ├── engine.py        # 背景主迴圈（擷取→偵測→瞄準）
 │   ├── overlay.py       # 置中透明點擊穿透覆蓋層
 │   └── hotkeys.py       # pynput 全域熱鍵（鍵盤+滑鼠側鍵）
@@ -91,6 +93,9 @@
 
 **Q：按 F9 顯示「輸入未到達遊戲」？**
 依訊息提示檢查：① 以管理員身份執行本工具（最常見原因：遊戲有提權時，未提權的輸入會被 Windows 靜默丟棄）② 遊戲設為無邊框視窗 ③ 點一下遊戲畫面取得焦點 ④ 確認在遊戲內可轉視角，不是在選單。
+
+**Q：覆蓋層有偵測框、面板顯示運行中，但啟動後準心完全不動？**
+先按 **F9** 跑輸入診斷分流：若顯示「輸入未到達遊戲」→ 通常是遊戲以管理員執行而本工具沒有，用 **start_admin.bat** 重啟本工具（或取消遊戲的「以系統管理員身份執行」）。若 F9 顯示「✓ 輸入正常」但遊戲內準心仍不動 → 該遊戲引擎過濾軟體注入的輸入，需改用驅動級注入：① 到 [Interception](https://github.com/oblitum/Interception/releases) 下載 1.0.1 zip ② 以系統管理員執行 `command line installer\install-interception.exe /install` 後**重新開機** ③ `pip install interception-python pywin32` ④ 面板「注入後端」選 Interception（或維持自動），完成後再按 F9 確認增益。
 
 **Q：覆蓋層沒出現？**
 遊戲改用無邊框視窗模式；或確認面板「啟用置中覆蓋層」已勾選。

@@ -139,8 +139,8 @@ class Overlay:
                 c.create_text(d.x1 + 2, max(0, d.y1 - 9), text=label,
                               fill=color, anchor="w", font=("Segoe UI", 9, "bold"))
             # 瞄準點標記
-            if st.lock_pt is not None:
-                tx, ty = st.lock_pt
+            if st.lock_point is not None:
+                tx, ty = st.lock_point
                 c.create_oval(tx - 3, ty - 3, tx + 3, ty + 3,
                               outline=COLOR_LOCK, width=2)
         # 狀態列

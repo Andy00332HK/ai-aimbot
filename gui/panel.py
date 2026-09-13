@@ -10,6 +10,7 @@ from tkinter import ttk
 
 from aimbot.capture import CAPTURE_BACKENDS, CAPTURE_BACKEND_LABELS
 from aimbot.config import (AIM_POINT_LABELS, IMGSZ_CHOICES, MODEL_SIZES,
+                           MOUSE_BACKEND_LABELS, MOUSE_BACKENDS,
                            ConfigManager, hold_key_label)
 from aimbot.engine import AimEngine
 
@@ -207,6 +208,16 @@ class ControlPanel:
                                                   for b in CAPTURE_BACKENDS])
         self.capture_combo.pack(side="left", padx=(10, 0))
         self.capture_combo.bind("<<ComboboxSelected>>", self._on_capture_change)
+        mouse_row = ttk.Frame(c2, style="Card.TFrame")
+        mouse_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(mouse_row, text="注入後端").pack(side="left")
+        self.mouse_combo = ttk.Combobox(mouse_row, state="readonly", width=18,
+                                        values=[MOUSE_BACKEND_LABELS[b]
+                                                for b in MOUSE_BACKENDS])
+        self.mouse_combo.pack(side="left", padx=(10, 0))
+        self.mouse_combo.bind("<<ComboboxSelected>>", self._on_mouse_change)
+        ttk.Label(mouse_row, text="（遊戲過濾注入輸入時用驅動級）",
+                  style="Sub.TLabel").pack(side="left", padx=(8, 0))
         self._add_slider(c2, "偵測門檻", "confidence", 0.05, 0.95, 0.05,
                          fmt="{:.2f}")
 
@@ -440,6 +451,11 @@ class ControlPanel:
         if idx >= 0:
             self.cm.update(capture_backend=CAPTURE_BACKENDS[idx])
 
+    def _on_mouse_change(self, _evt=None):
+        idx = self.mouse_combo.current()
+        if idx >= 0:
+            self.cm.update(mouse_backend=MOUSE_BACKENDS[idx])
+
     def _on_grid_change(self, _evt=None):
         self.cm.update(grid_cells=int(self.grid_combo.get()))
 
@@ -474,6 +490,7 @@ class ControlPanel:
             self.model_combo.current(MODEL_SIZES.index(cfg.model_size))
             self.imgsz_combo.set(str(cfg.imgsz))
             self.capture_combo.current(CAPTURE_BACKENDS.index(cfg.capture_backend))
+            self.mouse_combo.current(MOUSE_BACKENDS.index(cfg.mouse_backend))
             self.grid_combo.set(str(cfg.grid_cells))
             self.show_grid_var.set(cfg.show_grid)
             self.show_det_var.set(cfg.show_detections)
@@ -506,7 +523,8 @@ class ControlPanel:
         self.status_label.configure(
             text=("運行中" if active else "未啟動"),
             foreground=color if active else SUBTLE)
-        self.backend_label.configure(text=f"{st.backend} · {st.capture_backend}")
+        self.backend_label.configure(
+            text=f"{st.backend} · {st.capture_backend} · {st.mouse_backend}")
         big_on = self.engine._latch.is_set()
         self.big_btn.configure(
             text="■  停止輔助瞄準" if big_on else "▶  啟動輔助瞄準",
