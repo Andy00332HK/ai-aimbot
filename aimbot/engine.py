@@ -9,12 +9,11 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 
-from .capture import ScreenCapture
+from .capture import create_capture
 from .config import ConfigManager
 from .detector import Detection, Detector
 from .mouse import MouseController
-from .targeting import (STICKY_LOST_FRAMES, aim_point, compute_move,
-                        match_locked, pick_target)
+from .targeting import STICKY_LOST_FRAMES, aim_point, compute_move, pick_target
 
 
 @dataclass
@@ -30,6 +29,7 @@ class EngineState:
     lock_box: tuple[float, float, float, float] | None = None
     active: bool = False
     backend: str = "載入中…"
+    capture_backend: str = "載入中…"
     aim_point_mode: str = "head"
     model_ready: bool = False
     error: str = ""
@@ -39,7 +39,8 @@ class AimEngine:
     def __init__(self, config_manager: ConfigManager):
         self.cm = config_manager
         self.state = EngineState()
-        self.capture: ScreenCapture | None = None
+        self.capture = None
+        self._capture_pref = "auto"
         self.detector = Detector()
         self.mouse = MouseController()
         # 啟動控制
@@ -49,6 +50,7 @@ class AimEngine:
         self._thread: threading.Thread | None = None
         self._last_model_key: str = ""
         # 黏性鎖定狀態
+        self._locked_tid: int = -1          # 鎖定目標的 ByteTrack ID
         self._lock_box_prev: tuple[float, float, float, float] | None = None
         self._lock_last_pt: tuple[float, float] | None = None
         self._lock_last_conf: float = 0.0
@@ -95,14 +97,21 @@ class AimEngine:
     # ── 主迴圈 ──
     def _run(self) -> None:
         cfg = self.cm.get()
-        self.capture = ScreenCapture(cfg.roi_size)
+        self._capture_pref = cfg.capture_backend
+        self.capture = create_capture(cfg.roi_size, preferred=cfg.capture_backend)
         ema_dt = 0.0
         while not self._stop.is_set():
             try:
                 cfg = self.cm.get()
+                # 擷取後端切換（面板下拉）→ 重建擷取器
+                if cfg.capture_backend != self._capture_pref:
+                    self._capture_pref = cfg.capture_backend
+                    self.capture.close()
+                    self.capture = create_capture(cfg.roi_size,
+                                                   preferred=cfg.capture_backend)
                 # ROI 即時調整
                 if self.capture.roi_size != cfg.roi_size:
-                    self.capture.roi_size = cfg.roi_size
+                    self.capture.configure(cfg.roi_size)
                 # 模型／尺寸變更 → 重建偵測器
                 model_key = f"{cfg.model_size}|{cfg.imgsz}"
                 if model_key != self._last_model_key:
@@ -126,24 +135,28 @@ class AimEngine:
                 lock_conf, lock_pt, lock_box = 0.0, None, None
                 if not active:
                     # 停用時清除黏性鎖定，下次啟動重新選目標
+                    self._locked_tid = -1
                     self._lock_box_prev = None
                     self._lock_lost = 0
-                elif dets or (cfg.sticky_lock and self._lock_box_prev is not None):
+                elif dets or (cfg.sticky_lock and self._lock_last_pt is not None):
                     target = None
                     aiming_last_known = False
-                    if cfg.sticky_lock and self._lock_box_prev is not None:
-                        target = match_locked(dets, self._lock_box_prev) if dets else None
-                        if target is not None:
-                            self._lock_lost = 0
-                        elif self._lock_lost < STICKY_LOST_FRAMES:
-                            # 遺失容忍期：持續拉向最後已知位置（偵測閃斷不跳目標）
-                            self._lock_lost += 1
-                            aiming_last_known = True
-                        else:
-                            # 目標徹底消失 → 清鎖，下一段重新選最近
-                            self._lock_box_prev = None
-                            self._lock_lost = 0
-                    if aiming_last_known and self._lock_last_pt is not None:
+                    if cfg.sticky_lock and self._locked_tid != -1:
+                        # 用 ByteTrack ID 找回鎖定目標（ID 跨幀持續，不受他人干擾）
+                        target = next((d for d in dets
+                                       if d.track_id == self._locked_tid), None)
+                        if target is None:
+                            if self._lock_lost < STICKY_LOST_FRAMES and \
+                                    self._lock_last_pt is not None:
+                                # 遺失容忍期：持續拉向最後已知位置
+                                self._lock_lost += 1
+                                aiming_last_known = True
+                            else:
+                                # 目標徹底消失 → 清鎖，下一段重新選最近
+                                self._locked_tid = -1
+                                self._lock_box_prev = None
+                                self._lock_lost = 0
+                    if aiming_last_known:
                         tx, ty = self._lock_last_pt
                         dx, dy = compute_move(
                             tx, ty, cx, cy,
@@ -169,6 +182,7 @@ class AimEngine:
                                 sensitivity=cfg.sensitivity,
                             )
                             self.mouse.move_relative(dx, dy)
+                            self._locked_tid = target.track_id if cfg.sticky_lock else -1
                             self._lock_box_prev = (target.x1, target.y1, target.x2, target.y2)
                             self._lock_last_pt = (tx, ty)
                             self._lock_last_conf = target.conf
@@ -190,6 +204,7 @@ class AimEngine:
                     lock_box=lock_box,
                     active=active,
                     backend=self.detector.backend,
+                    capture_backend=self.capture.backend_name,
                     aim_point_mode=cfg.aim_point,
                     model_ready=self.detector._model is not None,
                     error="",

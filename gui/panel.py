@@ -8,6 +8,7 @@ import queue
 import tkinter as tk
 from tkinter import ttk
 
+from aimbot.capture import CAPTURE_BACKENDS, CAPTURE_BACKEND_LABELS
 from aimbot.config import (AIM_POINT_LABELS, HOLD_KEY_CHOICES, HOLD_KEY_LABELS,
                            IMGSZ_CHOICES, MODEL_SIZES, ConfigManager)
 from aimbot.engine import AimEngine
@@ -177,6 +178,14 @@ class ControlPanel:
                                         values=[str(v) for v in IMGSZ_CHOICES])
         self.imgsz_combo.pack(side="left", padx=(8, 0))
         self.imgsz_combo.bind("<<ComboboxSelected>>", self._on_imgsz_change)
+        cap_row = ttk.Frame(c2, style="Card.TFrame")
+        cap_row.pack(fill="x", pady=(6, 0))
+        ttk.Label(cap_row, text="擷取後端").pack(side="left")
+        self.capture_combo = ttk.Combobox(cap_row, state="readonly", width=18,
+                                          values=[CAPTURE_BACKEND_LABELS[b]
+                                                  for b in CAPTURE_BACKENDS])
+        self.capture_combo.pack(side="left", padx=(10, 0))
+        self.capture_combo.bind("<<ComboboxSelected>>", self._on_capture_change)
         self._add_slider(c2, "偵測門檻", "confidence", 0.05, 0.95, 0.05,
                          fmt="{:.2f}")
 
@@ -295,6 +304,11 @@ class ControlPanel:
     def _on_imgsz_change(self, _evt=None):
         self.cm.update(imgsz=int(self.imgsz_combo.get()))
 
+    def _on_capture_change(self, _evt=None):
+        idx = self.capture_combo.current()
+        if idx >= 0:
+            self.cm.update(capture_backend=CAPTURE_BACKENDS[idx])
+
     def _on_grid_change(self, _evt=None):
         self.cm.update(grid_cells=int(self.grid_combo.get()))
 
@@ -325,6 +339,7 @@ class ControlPanel:
             self.sticky_var.set(cfg.sticky_lock)
             self.model_combo.current(MODEL_SIZES.index(cfg.model_size))
             self.imgsz_combo.set(str(cfg.imgsz))
+            self.capture_combo.current(CAPTURE_BACKENDS.index(cfg.capture_backend))
             self.grid_combo.set(str(cfg.grid_cells))
             self.show_grid_var.set(cfg.show_grid)
             self.show_det_var.set(cfg.show_detections)
@@ -357,7 +372,7 @@ class ControlPanel:
         self.status_label.configure(
             text=("運行中" if active else "未啟動"),
             foreground=color if active else SUBTLE)
-        self.backend_label.configure(text=st.backend)
+        self.backend_label.configure(text=f"{st.backend} · {st.capture_backend}")
         big_on = self.engine._latch.is_set()
         self.big_btn.configure(
             text="■  停止輔助瞄準" if big_on else "▶  啟動輔助瞄準",

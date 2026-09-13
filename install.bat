@@ -27,7 +27,7 @@ if errorlevel 1 (
 )
 
 echo [3/3] 安裝其餘套件...
-python -m pip install ultralytics opencv-python mss pynput
+python -m pip install ultralytics opencv-python mss pynput dxcam lapx
 
 echo.
 echo ============================================

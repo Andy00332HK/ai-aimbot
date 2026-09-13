@@ -32,6 +32,7 @@ class Config:
     model_size: str = "n"          # "n" 快速 / "s" 精準
     imgsz: int = 640               # 推論輸入尺寸 320 / 416 / 640
     confidence: float = 0.45       # 偵測信心度門檻 0.05–0.95
+    capture_backend: str = "auto"  # auto / dxcam / mss
     # ── 掃描範圍 / 顯示 ──
     roi_size: int = 640            # ROI 邊長 px（螢幕正中央）
     grid_cells: int = 8            # 網格密度（每邊格數）
@@ -57,6 +58,8 @@ class Config:
         c = self
         if c.model_size not in MODEL_SIZES:
             c = replace(c, model_size="n")
+        if c.capture_backend not in ("auto", "dxcam", "mss"):
+            c = replace(c, capture_backend="auto")
         c = replace(c, imgsz=min(IMGSZ_CHOICES, key=lambda v: abs(v - c.imgsz)))
         c = replace(
             c,

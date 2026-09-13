@@ -1,8 +1,11 @@
-"""YOLO 偵測器：YOLO11（COCO 預訓練、只抓 person 類別）。
+"""YOLO 偵測器：YOLO11（COCO 預訓練、只抓 person 類別）+ ByteTrack 追蹤。
+
+追蹤：model.track(persist=True) 給每個目標持續的 track_id，
+偵測閃斷時 ByteTrack 用低信心度框關聯新舊幀，ID 不跳。
 
 後端自動降級鏈：
   1. TensorRT FP16 engine（若已匯出或 tensorrt 可用）
-  2. PyTorch CUDA（FP16 推論）
+  2. PyTorch CUDA
   3. PyTorch CPU
 
 僅供單機／離線遊戲使用。
@@ -19,6 +22,7 @@ from .config import PROJECT_ROOT
 
 MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
 PERSON_CLASS_ID = 0  # COCO: person
+TRACKER_YAML = os.path.join(PROJECT_ROOT, "aimbot", "bytetrack.yaml")
 
 
 @dataclass(frozen=True)
@@ -28,6 +32,7 @@ class Detection:
     x2: float
     y2: float
     conf: float
+    track_id: int = -1   # ByteTrack 持續 ID；-1 = 尚未分配
 
     @property
     def cx(self) -> float:
@@ -127,18 +132,22 @@ class Detector:
         except Exception:
             pass
 
-    # ── 推論 ──
+    # ── 推論（含 ByteTrack 追蹤） ──
     def detect(self, frame_bgr: np.ndarray) -> list[Detection]:
-        """回傳 ROI 座標系中的 person 偵測結果。任何錯誤回傳空列表。"""
+        """回傳 ROI 座標系中的 person 偵測結果（含持續 track_id）。
+        persist=True 讓追蹤器複用前幀狀態（幀序列來自同一畫面串流）。
+        任何錯誤回傳空列表。"""
         if self._model is None:
             return []
         t0 = time.perf_counter()
         try:
-            results = self._model.predict(
+            results = self._model.track(
                 frame_bgr,
                 imgsz=self.imgsz,
                 conf=self.confidence,
                 classes=[PERSON_CLASS_ID],
+                persist=True,
+                tracker=TRACKER_YAML,
                 verbose=False,
                 device=0 if self._use_cuda else "cpu",
             )
@@ -153,8 +162,12 @@ class Detector:
                 continue
             xyxy = boxes.xyxy.cpu().numpy() if boxes.xyxy is not None else []
             confs = boxes.conf.cpu().numpy() if boxes.conf is not None else []
-            for (x1, y1, x2, y2), cf in zip(xyxy, confs):
-                dets.append(Detection(float(x1), float(y1), float(x2), float(y2), float(cf)))
+            ids = boxes.id
+            ids = ids.cpu().numpy().astype(int) if ids is not None else None
+            for i, ((x1, y1, x2, y2), cf) in enumerate(zip(xyxy, confs)):
+                tid = int(ids[i]) if ids is not None and i < len(ids) else -1
+                dets.append(Detection(float(x1), float(y1), float(x2), float(y2),
+                                      float(cf), tid))
         return dets
 
     # ── 執行期切換 ──
