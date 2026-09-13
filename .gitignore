@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 模型權重與匯出引擎（首次執行自動下載）
+models/
+
+# 測試產物
+smoke_screen.png
+smoke_roi.png
+calib_*.png
+overlay_geom.png
+text_test.png
+
+# 打包
+build/
+dist/
+*.spec
+
+# 設定（含使用者本機調校值）
+config.json
