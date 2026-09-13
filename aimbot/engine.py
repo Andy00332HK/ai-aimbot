@@ -13,7 +13,8 @@ from .capture import ScreenCapture
 from .config import ConfigManager
 from .detector import Detection, Detector
 from .mouse import MouseController
-from .targeting import aim_point, compute_move, pick_target
+from .targeting import (STICKY_LOST_FRAMES, aim_point, compute_move,
+                        match_locked, pick_target)
 
 
 @dataclass
@@ -47,6 +48,11 @@ class AimEngine:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_model_key: str = ""
+        # 黏性鎖定狀態
+        self._lock_box_prev: tuple[float, float, float, float] | None = None
+        self._lock_last_pt: tuple[float, float] | None = None
+        self._lock_last_conf: float = 0.0
+        self._lock_lost: int = 0
 
     # ── 生命週期 ──
     def start(self) -> None:
@@ -118,10 +124,27 @@ class AimEngine:
 
                 active = self.detector._model is not None and self.is_active(cfg)
                 lock_conf, lock_pt, lock_box = 0.0, None, None
-                if active and dets:
-                    target = pick_target(dets, cx, cy)
-                    if target is not None:
-                        tx, ty = aim_point(target, cfg.aim_point)
+                if not active:
+                    # 停用時清除黏性鎖定，下次啟動重新選目標
+                    self._lock_box_prev = None
+                    self._lock_lost = 0
+                elif dets or (cfg.sticky_lock and self._lock_box_prev is not None):
+                    target = None
+                    aiming_last_known = False
+                    if cfg.sticky_lock and self._lock_box_prev is not None:
+                        target = match_locked(dets, self._lock_box_prev) if dets else None
+                        if target is not None:
+                            self._lock_lost = 0
+                        elif self._lock_lost < STICKY_LOST_FRAMES:
+                            # 遺失容忍期：持續拉向最後已知位置（偵測閃斷不跳目標）
+                            self._lock_lost += 1
+                            aiming_last_known = True
+                        else:
+                            # 目標徹底消失 → 清鎖，下一段重新選最近
+                            self._lock_box_prev = None
+                            self._lock_lost = 0
+                    if aiming_last_known and self._lock_last_pt is not None:
+                        tx, ty = self._lock_last_pt
                         dx, dy = compute_move(
                             tx, ty, cx, cy,
                             smoothing=cfg.smoothing,
@@ -130,9 +153,29 @@ class AimEngine:
                             sensitivity=cfg.sensitivity,
                         )
                         self.mouse.move_relative(dx, dy)
-                        lock_conf = target.conf
+                        lock_conf = self._lock_last_conf
                         lock_pt = (tx, ty)
-                        lock_box = (target.x1, target.y1, target.x2, target.y2)
+                        lock_box = self._lock_box_prev
+                    else:
+                        if target is None and dets:
+                            target = pick_target(dets, cx, cy)
+                        if target is not None:
+                            tx, ty = aim_point(target, cfg.aim_point)
+                            dx, dy = compute_move(
+                                tx, ty, cx, cy,
+                                smoothing=cfg.smoothing,
+                                deadzone_px=cfg.deadzone_px,
+                                max_speed_px=cfg.max_speed_px,
+                                sensitivity=cfg.sensitivity,
+                            )
+                            self.mouse.move_relative(dx, dy)
+                            self._lock_box_prev = (target.x1, target.y1, target.x2, target.y2)
+                            self._lock_last_pt = (tx, ty)
+                            self._lock_last_conf = target.conf
+                            self._lock_lost = 0
+                            lock_conf = target.conf
+                            lock_pt = (tx, ty)
+                            lock_box = self._lock_box_prev
 
                 dt = time.perf_counter() - t0
                 ema_dt = dt if ema_dt == 0.0 else ema_dt * 0.9 + dt * 0.1

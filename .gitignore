@@ -20,3 +20,4 @@ dist/
 
 # 設定（含使用者本機調校值）
 config.json
+app_running.png

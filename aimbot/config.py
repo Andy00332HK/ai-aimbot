@@ -40,6 +40,7 @@ class Config:
     show_overlay: bool = True
     # ── 瞄準 ──
     aim_point: str = "head"        # head = 框頂+20% / body = 框頂+55%
+    sticky_lock: bool = True       # 黏性鎖定：多人時鎖住同一目標不跳
     smoothing: float = 0.45        # 每幀移動誤差比例 0.05–1.0
     max_speed_px: float = 60.0     # 單幀最大位移 px
     deadzone_px: float = 2.0       # 誤差小於此值不移動（防抖）

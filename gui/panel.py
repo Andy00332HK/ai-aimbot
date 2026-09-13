@@ -210,6 +210,10 @@ class ControlPanel:
         # ── 瞄準手感 ──
         c4 = self._card(self.root, "瞄準手感")
         c4.pack(**pad)
+        self.sticky_var = tk.BooleanVar()
+        ttk.Checkbutton(c4, text="黏性鎖定（多人時鎖住同一目標不跳）",
+                        variable=self.sticky_var, style="Card.TCheckbutton",
+                        command=self._on_sticky_change).pack(fill="x")
         self._add_slider(c4, "平滑度", "smoothing", 0.05, 1.0, 0.05, fmt="{:.2f}")
         self._add_slider(c4, "滑鼠靈敏度", "sensitivity", 0.2, 3.0, 0.1, fmt="{:.1f}")
         self._add_slider(c4, "單幀最大位移(px)", "max_speed_px", 10, 200, 10, fmt="{:.0f}")
@@ -280,6 +284,9 @@ class ControlPanel:
     def _on_aim_change(self):
         self.cm.update(aim_point=self.aim_var.get())
 
+    def _on_sticky_change(self):
+        self.cm.update(sticky_lock=bool(self.sticky_var.get()))
+
     def _on_model_change(self, _evt=None):
         idx = self.model_combo.current()
         if idx >= 0:
@@ -315,6 +322,7 @@ class ControlPanel:
             self.mode_var.set(cfg.activation_mode)
             self.hold_key_combo.current(HOLD_KEY_CHOICES.index(cfg.hold_key))
             self.aim_var.set(cfg.aim_point)
+            self.sticky_var.set(cfg.sticky_lock)
             self.model_combo.current(MODEL_SIZES.index(cfg.model_size))
             self.imgsz_combo.set(str(cfg.imgsz))
             self.grid_combo.set(str(cfg.grid_cells))
