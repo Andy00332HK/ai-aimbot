@@ -24,3 +24,17 @@ app_running.png
 
 # CodeGraph 本機索引（不進版控）
 .codegraph/
+
+# Ultralytics training output (weights, plots, logs — large, regenerable)
+runs/
+
+# Local training data (your screenshots + labels — private, large)
+training/dataset/
+training/dataset_raw/
+
+# Editors / OS
+.idea/
+.vscode/
+*.log
+Thumbs.db
+Desktop.ini
