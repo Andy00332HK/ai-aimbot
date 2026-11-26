@@ -21,3 +21,6 @@ dist/
 # 設定（含使用者本機調校值）
 config.json
 app_running.png
+
+# CodeGraph 本機索引（不進版控）
+.codegraph/
