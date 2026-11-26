@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import queue
 import tkinter as tk
+from dataclasses import replace as _dc_replace
 from tkinter import ttk
 
-from aimbot.capture import CAPTURE_BACKENDS, CAPTURE_BACKEND_LABELS
-from aimbot.config import (AIM_POINT_LABELS, IMGSZ_CHOICES, MODEL_SIZES,
-                           MOUSE_BACKEND_LABELS, MOUSE_BACKENDS,
-                           ConfigManager, hold_key_label)
+from aimbot.capture import CAPTURE_BACKENDS, get_capture_backend_labels, list_monitors
+from aimbot.config import (IMGSZ_CHOICES, LANGUAGES, MODEL_SIZES,
+                           MOUSE_BACKENDS, ConfigManager,
+                           get_aim_point_labels, get_mouse_backend_labels,
+                           hold_key_label)
 from aimbot.engine import AimEngine
+from aimbot.i18n import label_map, set_language, t as _t_global
 
 BG = "#14161c"
 FG = "#e8eaf0"
@@ -21,7 +24,25 @@ ACCENT_OFF = "#30a46c"
 CARD = "#1c1f27"
 SUBTLE = "#8b90a0"
 
-MODEL_LABELS = {"n": "快速（n・最流暢）", "s": "精準（s・較準）"}
+SLIDER_KEYS = {
+    "confidence": "panel.confidence",
+    "roi_size": "panel.roi",
+    "half_life_ms": "panel.half_life",
+    "jitter_suppression": "panel.jitter",
+    "aim_prediction": "panel.prediction",
+    "sensitivity": "panel.sensitivity",
+}
+STAT_KEYS = ("panel.stat.fps", "panel.stat.inference",
+             "panel.stat.count", "panel.stat.lock_conf")
+
+MODEL_I18N_PREFIX = "config.enum.model"
+CAPTURE_I18N_PREFIX = "config.enum.capture"
+MOUSE_I18N_PREFIX = "config.enum.mouse_backend"
+AIM_I18N_PREFIX = "config.enum.aim_point"
+
+
+def _model_labels(lang=None):
+    return label_map(MODEL_I18N_PREFIX, MODEL_SIZES, lang=lang)
 
 
 class UiDispatcher:
@@ -57,8 +78,13 @@ class ControlPanel:
         self.suspend_hotkeys = suspend_hotkeys  # 擷取按鍵時暫停全域熱鍵，避免誤觸 F6-F8
         self.resume_hotkeys = resume_hotkeys
         self._updating_ui = False  # 防止程式更新 UI 時觸發回寫
+        self._tr = []  # (apply_fn,) live-language refresh callbacks
+        try:
+            set_language(getattr(self.cm.get(), "language", "zh"))
+        except Exception:
+            pass
 
-        root.title("AI Aimbot 控制台（僅限單機遊戲）")
+        root.title(self._t("panel.window_title"))
         root.configure(bg=BG)
         root.resizable(False, False)  # 尺寸由內容自適應，避免不同 DPI 下截斷
         root.protocol("WM_DELETE_WINDOW", on_quit)
@@ -116,6 +142,91 @@ class ControlPanel:
     def _card(self, parent, title) -> ttk.LabelFrame:
         return ttk.LabelFrame(parent, text=title, style="Card.TLabelframe", padding=10)
 
+    def _t(self, key: str, **kw) -> str:
+        try:
+            return _t_global(key, lang=getattr(self.cm.get(), "language", "zh"), **kw)
+        except Exception:
+            return key
+
+    def _reg(self, fn):
+        self._tr.append(fn)
+        return fn
+
+    def _apply_language(self):
+        try:
+            set_language(getattr(self.cm.get(), "language", "zh"))
+        except Exception:
+            pass
+        try:
+            self.root.title(self._t("panel.window_title"))
+        except Exception:
+            pass
+        for fn in list(self._tr):
+            try:
+                fn()
+            except Exception:
+                pass
+        # Rebuild monitor dropdown labels in the new language
+        try:
+            self._monitors = list_monitors()
+            cur = int(getattr(self.cm.get(), "monitor_index", 0))
+            vals = [f"{m['index']}: {m['label']}" for m in self._monitors] or [self._t("capture.monitor.fallback")]
+            self.monitor_combo.configure(values=vals)
+            sel = 0
+            for pos, m in enumerate(self._monitors):
+                if int(m.get("index", pos)) == cur:
+                    sel = pos
+                    break
+            self.monitor_combo.current(sel)
+        except Exception:
+            pass
+        # Rebuild enum combo values (model/capture/mouse keep selection by index)
+        try:
+            mi = self.model_combo.current()
+            self.model_combo.configure(values=[_model_labels(self.cm.get().language)[m] for m in MODEL_SIZES])
+            if mi >= 0:
+                self.model_combo.current(mi)
+        except Exception:
+            pass
+        try:
+            ci = self.capture_combo.current()
+            _cl = get_capture_backend_labels(self.cm.get().language)
+            self.capture_combo.configure(values=[_cl[b] for b in CAPTURE_BACKENDS])
+            if ci >= 0:
+                self.capture_combo.current(ci)
+        except Exception:
+            pass
+        try:
+            oi = self.mouse_combo.current()
+            _ml = get_mouse_backend_labels(self.cm.get().language)
+            self.mouse_combo.configure(values=[_ml[b] for b in MOUSE_BACKENDS])
+            if oi >= 0:
+                self.mouse_combo.current(oi)
+        except Exception:
+            pass
+        try:
+            lang = self.cm.get().language
+            _al = get_aim_point_labels(lang)
+            self._aim_radio_head.configure(text=_al.get("head", "head"))
+            self._aim_radio_body.configure(text=_al.get("body", "body"))
+        except Exception:
+            pass
+        self._load_from_config()
+
+    def _on_language_change(self, _evt=None):
+        idx = self.lang_combo.current()
+        if idx >= 0:
+            self.cm.update(language=LANGUAGES[idx])
+            try:
+                from aimbot.i18n import t as _tg
+                _lang = LANGUAGES[idx]
+                self.engine.state = _dc_replace(
+                    self.engine.state,
+                    diag_message=_tg("engine.state.diag_default", lang=_lang))
+            except Exception:
+                pass
+            self._apply_language()
+
     # ── UI 建構 ──
     def _build(self):
         # 可捲動容器：內容放進 self.body，視窗高度超過 85% 螢幕時出現捲軸
@@ -140,148 +251,226 @@ class ControlPanel:
         status_row.pack(**pad)
         self.dot = tk.Canvas(status_row, width=12, height=12, bg=BG, highlightthickness=0)
         self.dot.pack(side="left")
-        self.status_label = ttk.Label(status_row, text="未啟動", font=("Microsoft JhengHei UI", 11, "bold"))
+        self.status_label = ttk.Label(status_row, text=self._t("common.idle"), font=("Microsoft JhengHei UI", 11, "bold"))
         self.status_label.pack(side="left", padx=(6, 0))
         self.backend_label = ttk.Label(status_row, text="", style="Sub.TLabel")
         self.backend_label.pack(side="right")
 
         # 大按鈕
-        self.big_btn = ttk.Button(parent, text="▶  啟動輔助瞄準",
+        self.big_btn = ttk.Button(parent, text=self._t("panel.start_button.start"),
                                   style="Start.TButton", command=self._on_big_btn)
         self.big_btn.pack(fill="x", padx=12, pady=8, ipady=6)
         self.big_hint = ttk.Label(parent, text="", style="Sub.TLabel",
                                   font=("Microsoft JhengHei UI", 9))
         self.big_hint.pack(fill="x", padx=14)
 
+        self._reg(lambda: self.big_btn.configure(
+            text=self._t("panel.start_button.stop") if self.engine._latch.is_set()
+            else self._t("panel.start_button.start")))
+
+        # ── 語言 ──
+        c0 = self._card(parent, self._t("panel.card.general"))
+        self._reg(lambda _c=c0: _c.configure(text=self._t("panel.card.general")))
+        c0.pack(**pad)
+        lang_row = ttk.Frame(c0, style="Card.TFrame")
+        lang_row.pack(fill="x")
+        self._lang_label = ttk.Label(lang_row, text=self._t("panel.language"))
+        self._lang_label.pack(side="left")
+        self._reg(lambda: self._lang_label.configure(text=self._t("panel.language")))
+        self.lang_combo = ttk.Combobox(lang_row, state="readonly", width=16,
+                                       values=[self._t("panel.language.zh"), self._t("panel.language.en")])
+        self._reg(lambda: self.lang_combo.configure(values=[self._t("panel.language.zh"), self._t("panel.language.en")]))
+        self.lang_combo.pack(side="left", padx=(10, 0))
+        self.lang_combo.bind("<<ComboboxSelected>>", self._on_language_change)
+
         # ── 啟動設定 ──
-        c1 = self._card(parent, "啟動設定")
+        c1 = self._card(parent, self._t("panel.card.activation"))
+        self._reg(lambda _c=c1: _c.configure(text=self._t("panel.card.activation")))
         c1.pack(**pad)
         mode_row = ttk.Frame(c1, style="Card.TFrame")
         mode_row.pack(fill="x")
         self.mode_var = tk.StringVar()
-        ttk.Radiobutton(mode_row, text="按住啟動（HOLD）", value="hold",
+        self._mode_radio_hold = ttk.Radiobutton(mode_row, text=self._t("panel.mode.hold"), value="hold",
                         variable=self.mode_var, style="Card.TRadiobutton",
-                        command=self._on_mode_change).pack(side="left")
-        ttk.Radiobutton(mode_row, text="開關切換（TOGGLE）", value="toggle",
+                        command=self._on_mode_change)
+        self._mode_radio_hold.pack(side="left")
+        self._reg(lambda: self._mode_radio_hold.configure(text=self._t("panel.mode.hold")))
+        self._mode_radio_toggle = ttk.Radiobutton(mode_row, text=self._t("panel.mode.toggle"), value="toggle",
                         variable=self.mode_var, style="Card.TRadiobutton",
-                        command=self._on_mode_change).pack(side="left", padx=(10, 0))
+                        command=self._on_mode_change)
+        self._mode_radio_toggle.pack(side="left", padx=(10, 0))
+        self._reg(lambda: self._mode_radio_toggle.configure(text=self._t("panel.mode.toggle")))
         key_row = ttk.Frame(c1, style="Card.TFrame")
         key_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(key_row, text="啟動鍵").pack(side="left")
+        self._hold_key_label = ttk.Label(key_row, text=self._t("panel.hold_key"))
+        self._hold_key_label.pack(side="left")
+        self._reg(lambda: self._hold_key_label.configure(text=self._t("panel.hold_key")))
         self.hold_key_var = tk.StringVar(value="Shift")
         ttk.Label(key_row, textvariable=self.hold_key_var,
                   font=("Microsoft JhengHei UI", 10, "bold")).pack(side="left", padx=(10, 0))
-        ttk.Button(key_row, text="變更…", style="Small.TButton",
-                   command=self._open_key_capture).pack(side="left", padx=(10, 0))
-        ttk.Label(key_row, text="（鍵盤任意鍵或滑鼠左/右/中/側鍵）",
-                  style="Sub.TLabel").pack(side="left", padx=(8, 0))
+        self._change_btn = ttk.Button(key_row, text=self._t("panel.change"), style="Small.TButton",
+                   command=self._open_key_capture)
+        self._change_btn.pack(side="left", padx=(10, 0))
+        self._reg(lambda: self._change_btn.configure(text=self._t("panel.change")))
+        self._hold_hint_label = ttk.Label(key_row, text=self._t("panel.hold_hint"),
+                  style="Sub.TLabel")
+        self._hold_hint_label.pack(side="left", padx=(8, 0))
+        self._reg(lambda: self._hold_hint_label.configure(text=self._t("panel.hold_hint")))
         aim_row = ttk.Frame(c1, style="Card.TFrame")
         aim_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(aim_row, text="瞄準部位").pack(side="left")
+        self._aim_label = ttk.Label(aim_row, text=self._t("panel.aim_point"))
+        self._aim_label.pack(side="left")
+        self._reg(lambda: self._aim_label.configure(text=self._t("panel.aim_point")))
         self.aim_var = tk.StringVar()
-        ttk.Radiobutton(aim_row, text="頭部", value="head", variable=self.aim_var,
-                        style="Card.TRadiobutton", command=self._on_aim_change).pack(side="left", padx=(10, 0))
-        ttk.Radiobutton(aim_row, text="胸口", value="body", variable=self.aim_var,
-                        style="Card.TRadiobutton", command=self._on_aim_change).pack(side="left", padx=(6, 0))
-        ttk.Label(aim_row, text="（熱鍵 F7 即時切換）", style="Sub.TLabel").pack(side="left", padx=(6, 0))
+        self._aim_radio_head = ttk.Radiobutton(aim_row, text=self._t("panel.aim.head"), value="head", variable=self.aim_var,
+                        style="Card.TRadiobutton", command=self._on_aim_change)
+        self._aim_radio_head.pack(side="left", padx=(10, 0))
+        self._aim_radio_body = ttk.Radiobutton(aim_row, text=self._t("panel.aim.body"), value="body", variable=self.aim_var,
+                        style="Card.TRadiobutton", command=self._on_aim_change)
+        self._aim_radio_body.pack(side="left", padx=(6, 0))
+        self._aim_hint_label = ttk.Label(aim_row, text=self._t("panel.aim_hint"), style="Sub.TLabel")
+        self._aim_hint_label.pack(side="left", padx=(6, 0))
+        self._reg(lambda: self._aim_hint_label.configure(text=self._t("panel.aim_hint")))
 
         # ── 偵測設定 ──
-        c2 = self._card(parent, "偵測設定")
+        c2 = self._card(parent, self._t("panel.card.detection"))
+        self._reg(lambda _c=c2: _c.configure(text=self._t("panel.card.detection")))
         c2.pack(**pad)
         model_row = ttk.Frame(c2, style="Card.TFrame")
         model_row.pack(fill="x")
-        ttk.Label(model_row, text="模型").pack(side="left")
+        self._model_label = ttk.Label(model_row, text=self._t("panel.model"))
+        self._model_label.pack(side="left")
+        self._reg(lambda: self._model_label.configure(text=self._t("panel.model")))
         self.model_combo = ttk.Combobox(model_row, state="readonly", width=18,
-                                        values=[MODEL_LABELS[m] for m in MODEL_SIZES])
+                                        values=[_model_labels(self.cm.get().language)[m] for m in MODEL_SIZES])
         self.model_combo.pack(side="left", padx=(10, 0))
         self.model_combo.bind("<<ComboboxSelected>>", self._on_model_change)
-        ttk.Label(model_row, text="推論尺寸").pack(side="left", padx=(14, 0))
+        self._imgsz_label = ttk.Label(model_row, text=self._t("panel.imgsz"))
+        self._imgsz_label.pack(side="left", padx=(14, 0))
+        self._reg(lambda: self._imgsz_label.configure(text=self._t("panel.imgsz")))
         self.imgsz_combo = ttk.Combobox(model_row, state="readonly", width=6,
                                         values=[str(v) for v in IMGSZ_CHOICES])
         self.imgsz_combo.pack(side="left", padx=(8, 0))
         self.imgsz_combo.bind("<<ComboboxSelected>>", self._on_imgsz_change)
         cap_row = ttk.Frame(c2, style="Card.TFrame")
         cap_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(cap_row, text="擷取後端").pack(side="left")
+        self._cap_label = ttk.Label(cap_row, text=self._t("panel.capture_backend"))
+        self._cap_label.pack(side="left")
+        self._reg(lambda: self._cap_label.configure(text=self._t("panel.capture_backend")))
         self.capture_combo = ttk.Combobox(cap_row, state="readonly", width=18,
-                                          values=[CAPTURE_BACKEND_LABELS[b]
+                                          values=[get_capture_backend_labels(self.cm.get().language)[b]
                                                   for b in CAPTURE_BACKENDS])
         self.capture_combo.pack(side="left", padx=(10, 0))
         self.capture_combo.bind("<<ComboboxSelected>>", self._on_capture_change)
+        mon_row = ttk.Frame(c2, style="Card.TFrame")
+        mon_row.pack(fill="x", pady=(6, 0))
+        self._mon_label = ttk.Label(mon_row, text=self._t("panel.monitor"))
+        self._mon_label.pack(side="left")
+        self._reg(lambda: self._mon_label.configure(text=self._t("panel.monitor")))
+        try:
+            self._monitors = list_monitors()
+        except Exception:
+            self._monitors = []
+        self.monitor_combo = ttk.Combobox(mon_row, state="readonly", width=30,
+                                          values=[f"{m['index']}: {m['label']}"
+                                                  for m in self._monitors] or [self._t("capture.monitor.fallback")])
+        self.monitor_combo.pack(side="left", padx=(10, 0))
+        self.monitor_combo.bind("<<ComboboxSelected>>", self._on_monitor_change)
         mouse_row = ttk.Frame(c2, style="Card.TFrame")
         mouse_row.pack(fill="x", pady=(6, 0))
-        ttk.Label(mouse_row, text="注入後端").pack(side="left")
+        self._mouse_label = ttk.Label(mouse_row, text=self._t("panel.mouse_backend"))
+        self._mouse_label.pack(side="left")
+        self._reg(lambda: self._mouse_label.configure(text=self._t("panel.mouse_backend")))
         self.mouse_combo = ttk.Combobox(mouse_row, state="readonly", width=18,
-                                        values=[MOUSE_BACKEND_LABELS[b]
+                                        values=[get_mouse_backend_labels(self.cm.get().language)[b]
                                                 for b in MOUSE_BACKENDS])
         self.mouse_combo.pack(side="left", padx=(10, 0))
         self.mouse_combo.bind("<<ComboboxSelected>>", self._on_mouse_change)
-        ttk.Label(mouse_row, text="（遊戲過濾注入輸入時用驅動級）",
-                  style="Sub.TLabel").pack(side="left", padx=(8, 0))
-        self._add_slider(c2, "偵測門檻", "confidence", 0.05, 0.95, 0.05,
+        self._mouse_hint_label = ttk.Label(mouse_row, text=self._t("panel.mouse_hint"),
+                  style="Sub.TLabel")
+        self._mouse_hint_label.pack(side="left", padx=(8, 0))
+        self._reg(lambda: self._mouse_hint_label.configure(text=self._t("panel.mouse_hint")))
+        self._add_slider(c2, "panel.confidence", "confidence", 0.05, 0.95, 0.05,
                          fmt="{:.2f}")
 
         # ── 掃描範圍與顯示 ──
-        c3 = self._card(parent, "掃描範圍與顯示")
+        c3 = self._card(parent, self._t("panel.card.scan"))
+        self._reg(lambda _c=c3: _c.configure(text=self._t("panel.card.scan")))
         c3.pack(**pad)
-        self._add_slider(c3, "掃描範圍 ROI(px)", "roi_size", 320, 1000, 20,
+        self._add_slider(c3, "panel.roi", "roi_size", 320, 1000, 20,
                          fmt="{:.0f}")
         grid_row = ttk.Frame(c3, style="Card.TFrame")
         grid_row.pack(fill="x")
-        ttk.Label(grid_row, text="網格密度").pack(side="left")
+        self._grid_label = ttk.Label(grid_row, text=self._t("panel.grid_density"))
+        self._grid_label.pack(side="left")
+        self._reg(lambda: self._grid_label.configure(text=self._t("panel.grid_density")))
         self.grid_combo = ttk.Combobox(grid_row, state="readonly", width=4,
                                        values=[str(v) for v in (4, 6, 8, 10, 12, 16)])
         self.grid_combo.pack(side="left", padx=(8, 0))
         self.grid_combo.bind("<<ComboboxSelected>>", self._on_grid_change)
         self.show_grid_var = tk.BooleanVar()
-        ttk.Checkbutton(grid_row, text="顯示網格", variable=self.show_grid_var,
+        self._show_grid_cb = ttk.Checkbutton(grid_row, text=self._t("panel.show_grid"), variable=self.show_grid_var,
                         style="Card.TCheckbutton",
-                        command=self._on_show_grid_change).pack(side="left", padx=(14, 0))
+                        command=self._on_show_grid_change)
+        self._show_grid_cb.pack(side="left", padx=(14, 0))
+        self._reg(lambda: self._show_grid_cb.configure(text=self._t("panel.show_grid")))
         show_row = ttk.Frame(c3, style="Card.TFrame")
         show_row.pack(fill="x", pady=(4, 0))
         self.show_det_var = tk.BooleanVar()
-        ttk.Checkbutton(show_row, text="顯示偵測框", variable=self.show_det_var,
+        self._show_det_cb = ttk.Checkbutton(show_row, text=self._t("panel.show_det"), variable=self.show_det_var,
                         style="Card.TCheckbutton",
-                        command=self._on_show_det_change).pack(side="left")
+                        command=self._on_show_det_change)
+        self._show_det_cb.pack(side="left")
+        self._reg(lambda: self._show_det_cb.configure(text=self._t("panel.show_det")))
         self.show_overlay_var = tk.BooleanVar()
-        ttk.Checkbutton(show_row, text="啟用置中覆蓋層", variable=self.show_overlay_var,
+        self._show_overlay_cb = ttk.Checkbutton(show_row, text=self._t("panel.show_overlay"), variable=self.show_overlay_var,
                         style="Card.TCheckbutton",
-                        command=self._on_show_overlay_change).pack(side="left", padx=(14, 0))
+                        command=self._on_show_overlay_change)
+        self._show_overlay_cb.pack(side="left", padx=(14, 0))
+        self._reg(lambda: self._show_overlay_cb.configure(text=self._t("panel.show_overlay")))
 
         # ── 瞄準手感 ──
-        c4 = self._card(parent, "瞄準手感")
+        c4 = self._card(parent, self._t("panel.card.feel"))
+        self._reg(lambda _c=c4: _c.configure(text=self._t("panel.card.feel")))
         c4.pack(**pad)
         self.sticky_var = tk.BooleanVar()
-        ttk.Checkbutton(c4, text="黏性鎖定（多人時鎖住同一目標不跳）",
+        self._sticky_cb = ttk.Checkbutton(c4, text=self._t("panel.sticky"),
                         variable=self.sticky_var, style="Card.TCheckbutton",
-                        command=self._on_sticky_change).pack(fill="x")
-        self._add_slider(c4, "收斂半衰期(ms)・越小拉越快", "half_life_ms", 20, 300, 10,
+                        command=self._on_sticky_change)
+        self._sticky_cb.pack(fill="x")
+        self._reg(lambda: self._sticky_cb.configure(text=self._t("panel.sticky")))
+        self._add_slider(c4, "panel.half_life", "half_life_ms", 20, 300, 10,
                          fmt="{:.0f}")
-        self._add_slider(c4, "抖動抑制", "jitter_suppression", 0.0, 1.0, 0.05,
+        self._add_slider(c4, "panel.jitter", "jitter_suppression", 0.0, 1.0, 0.05,
                          fmt="{:.0%}")
-        self._add_slider(c4, "提前量（移動目標）", "aim_prediction", 0.0, 1.0, 0.05,
+        self._add_slider(c4, "panel.prediction", "aim_prediction", 0.0, 1.0, 0.05,
                          fmt="{:.0%}")
-        self._add_slider(c4, "滑鼠靈敏度", "sensitivity", 0.2, 3.0, 0.1, fmt="{:.1f}")
+        self._add_slider(c4, "panel.sensitivity", "sensitivity", 0.2, 3.0, 0.1, fmt="{:.1f}")
 
         # ── 即時狀態 ──
-        c5 = self._card(parent, "即時狀態")
+        c5 = self._card(parent, self._t("panel.card.status"))
+        self._reg(lambda _c=c5: _c.configure(text=self._t("panel.card.status")))
         c5.pack(**pad)
         stats = ttk.Frame(c5, style="Card.TFrame")
         stats.pack(fill="x")
         self.stat_labels = {}
-        for i, name in enumerate(("FPS", "推論延遲", "偵測數", "鎖定信心")):
+        self._stat_name_labels = {}
+        for i, key in enumerate(STAT_KEYS):
             col = ttk.Frame(stats, style="Card.TFrame")
             col.grid(row=0, column=i, padx=(0, 16))
             v = ttk.Label(col, text="—", font=("Consolas", 12, "bold"))
             v.pack(anchor="w")
-            ttk.Label(col, text=name, style="Sub.TLabel").pack(anchor="w")
-            self.stat_labels[name] = v
+            nm = ttk.Label(col, text=self._t(key), style="Sub.TLabel")
+            nm.pack(anchor="w")
+            self._reg(lambda _w=nm, _k=key: _w.configure(text=self._t(_k)))
+            self.stat_labels[key] = v
+            self._stat_name_labels[key] = nm
         self.error_label = ttk.Label(c5, text="", foreground=ACCENT, background=CARD)
         self.error_label.pack(fill="x", pady=(4, 0))
         # 輸入診斷
         diag_row = ttk.Frame(c5, style="Card.TFrame")
         diag_row.pack(fill="x", pady=(6, 0))
-        self.diag_label = ttk.Label(diag_row, text="輸入診斷：遊戲內按 F9",
+        self.diag_label = ttk.Label(diag_row, text=self._t("panel.diag_default"),
                                     style="Sub.TLabel", wraplength=330,
                                     justify="left")
         self.diag_label.pack(side="left", fill="x", expand=True)
@@ -291,13 +480,19 @@ class ControlPanel:
         # ── 底部按鈕 ──
         bottom = ttk.Frame(parent)
         bottom.pack(fill="x", padx=12, pady=10)
-        ttk.Button(bottom, text="還原預設", style="Small.TButton",
-                   command=self._on_reset).pack(side="left")
-        ttk.Button(bottom, text="離開", style="Small.TButton",
-                   command=self.on_quit).pack(side="right")
-        ttk.Label(parent, text="⚠ 僅供單機／離線遊戲使用，請勿用於任何連線遊戲",
+        self._reset_btn = ttk.Button(bottom, text=self._t("panel.reset"), style="Small.TButton",
+                   command=self._on_reset)
+        self._reset_btn.pack(side="left")
+        self._reg(lambda: self._reset_btn.configure(text=self._t("panel.reset")))
+        self._quit_btn = ttk.Button(bottom, text=self._t("panel.quit"), style="Small.TButton",
+                   command=self.on_quit)
+        self._quit_btn.pack(side="right")
+        self._reg(lambda: self._quit_btn.configure(text=self._t("panel.quit")))
+        self._disclaimer_label = ttk.Label(parent, text=self._t("panel.disclaimer"),
                   foreground="#c7a15a", background=BG,
-                  font=("Microsoft JhengHei UI", 9)).pack(fill="x", padx=14, pady=(0, 8))
+                  font=("Microsoft JhengHei UI", 9))
+        self._disclaimer_label.pack(fill="x", padx=14, pady=(0, 8))
+        self._reg(lambda: self._disclaimer_label.configure(text=self._t("panel.disclaimer")))
 
         self._load_from_config()
         self.root.after(50, self._cap_window_height)
@@ -319,12 +514,14 @@ class ControlPanel:
         w = self.body.winfo_reqwidth() + 40  # 內容寬 + 捲軸與邊距
         self.root.geometry(f"{w}x{h}")
 
-    def _add_slider(self, parent, label, cfg_name, from_, to, res, fmt):
+    def _add_slider(self, parent, label_key, cfg_name, from_, to, res, fmt):
         row = ttk.Frame(parent, style="Card.TFrame")
         row.pack(fill="x", pady=(4, 0))
         top = ttk.Frame(row, style="Card.TFrame")
         top.pack(fill="x")
-        ttk.Label(top, text=label).pack(side="left")
+        lab = ttk.Label(top, text=self._t(label_key))
+        lab.pack(side="left")
+        self._reg(lambda _w=lab, _k=label_key: _w.configure(text=self._t(_k)))
         val = ttk.Label(top, text="", font=("Consolas", 10, "bold"))
         val.pack(side="right")
         slider = ttk.Scale(row, from_=from_, to=to, orient="horizontal")
@@ -368,14 +565,14 @@ class ControlPanel:
             self.suspend_hotkeys()
 
         dlg = tk.Toplevel(self.root)
-        dlg.title("設定啟動鍵")
+        dlg.title(self._t("panel.key_dialog.title"))
         dlg.configure(bg=CARD)
         dlg.resizable(False, False)
         dlg.grab_set()
-        ttk.Label(dlg, text="請按下要綁定的按鍵\n鍵盤任意鍵，或點擊滑鼠左/右/中/側鍵",
+        ttk.Label(dlg, text=self._t("panel.key_dialog.prompt"),
                   font=("Microsoft JhengHei UI", 11)).pack(padx=24, pady=(18, 6))
         ttk.Label(dlg, style="Sub.TLabel",
-                  text="Esc 或點擊本視窗內＝取消",
+                  text=self._t("panel.key_dialog.cancel"),
                   font=("Microsoft JhengHei UI", 9)).pack(pady=(0, 14))
 
         state = {"done": False, "t0": _time.time()}
@@ -398,7 +595,7 @@ class ControlPanel:
             dlg.destroy()
             if val:
                 self.cm.update(hold_key=val)
-                self.hold_key_var.set(hold_key_label(val))
+                self.hold_key_var.set(hold_key_label(val, lang=self.cm.get().language))
                 self._refresh_hint()
 
         def in_dialog(x, y) -> bool:
@@ -451,6 +648,14 @@ class ControlPanel:
         if idx >= 0:
             self.cm.update(capture_backend=CAPTURE_BACKENDS[idx])
 
+    def _on_monitor_change(self, _evt=None):
+        idx = self.monitor_combo.current()
+        if idx >= 0:
+            if self._monitors and idx < len(self._monitors):
+                self.cm.update(monitor_index=int(self._monitors[idx]["index"]))
+            else:
+                self.cm.update(monitor_index=int(idx))
+
     def _on_mouse_change(self, _evt=None):
         idx = self.mouse_combo.current()
         if idx >= 0:
@@ -476,20 +681,39 @@ class ControlPanel:
 
     def _on_reset(self):
         cfg = self.cm.reset()
-        self._load_from_config()
+        self._apply_language()
 
     # ── UI 與設定同步 ──
     def _load_from_config(self):
         cfg = self.cm.get()
+        lang = getattr(cfg, "language", "zh")
         self._updating_ui = True
         try:
             self.mode_var.set(cfg.activation_mode)
-            self.hold_key_var.set(hold_key_label(cfg.hold_key))
+            self.hold_key_var.set(hold_key_label(cfg.hold_key, lang=lang))
+            try:
+                self.lang_combo.current(LANGUAGES.index(lang))
+            except Exception:
+                pass
             self.aim_var.set(cfg.aim_point)
             self.sticky_var.set(cfg.sticky_lock)
             self.model_combo.current(MODEL_SIZES.index(cfg.model_size))
             self.imgsz_combo.set(str(cfg.imgsz))
             self.capture_combo.current(CAPTURE_BACKENDS.index(cfg.capture_backend))
+            try:
+                mi = int(getattr(cfg, "monitor_index", 0))
+            except Exception:
+                mi = 0
+            # 找到對應 index 的下拉位置（主螢幕排第一）
+            sel = 0
+            for pos, m in enumerate(getattr(self, "_monitors", []) or []):
+                if int(m.get("index", pos)) == mi:
+                    sel = pos
+                    break
+            try:
+                self.monitor_combo.current(sel)
+            except Exception:
+                pass
             self.mouse_combo.current(MOUSE_BACKENDS.index(cfg.mouse_backend))
             self.grid_combo.set(str(cfg.grid_cells))
             self.show_grid_var.set(cfg.show_grid)
@@ -505,39 +729,56 @@ class ControlPanel:
 
     def _refresh_hint(self):
         cfg = self.cm.get()
+        lang = getattr(cfg, "language", "zh")
         if cfg.activation_mode == "hold":
             self.big_hint.configure(
-                text=f"按住「{hold_key_label(cfg.hold_key)}」或點上方按鈕即可啟動")
+                text=self._t("panel.hint.hold", hold=hold_key_label(cfg.hold_key, lang=lang)))
         else:
-            self.big_hint.configure(text="點上方按鈕或按 F6 切換開關")
+            self.big_hint.configure(text=self._t("panel.hint.toggle"))
 
     # ── 定時刷新（每 250ms） ──
     def _refresh_stats(self):
-        self.disp.pump()
-        st = self.engine.state
-        cfg = self.cm.get()
-        active = st.active
-        self.dot.delete("all")
-        color = ACCENT_OFF if active else "#666a76"
-        self.dot.create_oval(2, 2, 10, 10, fill=color, outline=color)
-        self.status_label.configure(
-            text=("運行中" if active else "未啟動"),
-            foreground=color if active else SUBTLE)
-        self.backend_label.configure(
-            text=f"{st.backend} · {st.capture_backend} · {st.mouse_backend}")
-        big_on = self.engine._latch.is_set()
-        self.big_btn.configure(
-            text="■  停止輔助瞄準" if big_on else "▶  啟動輔助瞄準",
-            style="Stop.TButton" if big_on else "Start.TButton")
-        self.stat_labels["FPS"].configure(text=f"{st.fps:.0f}")
-        self.stat_labels["推論延遲"].configure(text=f"{st.inference_ms:.1f}ms")
-        self.stat_labels["偵測數"].configure(text=f"{st.n_detections}")
-        self.stat_labels["鎖定信心"].configure(
-            text=f"{st.lock_conf:.2f}" if st.lock_conf else "—")
-        self.error_label.configure(text=st.error)
-        diag = st.diag_message or "輸入診斷：遊戲內按 F9"
-        self.diag_label.configure(
-            text=diag,
-            foreground=(ACCENT_OFF if "✓" in diag
-                        else ACCENT if "✗" in diag else SUBTLE))
-        self.root.after(250, self._refresh_stats)
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            self.disp.pump()
+        except Exception:
+            pass
+        try:
+            st = self.engine.state
+            cfg = self.cm.get()
+            active = st.active
+            self.dot.delete("all")
+            color = ACCENT_OFF if active else "#666a76"
+            self.dot.create_oval(2, 2, 10, 10, fill=color, outline=color)
+            self.status_label.configure(
+                text=(self._t("common.running") if active else self._t("common.idle")),
+                foreground=color if active else SUBTLE)
+            self.backend_label.configure(
+                text=self._t("panel.backend_separator").join([st.backend, st.capture_backend, st.mouse_backend]))
+            big_on = self.engine._latch.is_set()
+            self.big_btn.configure(
+                text=self._t("panel.start_button.stop") if big_on else self._t("panel.start_button.start"),
+                style="Stop.TButton" if big_on else "Start.TButton")
+            self.stat_labels["panel.stat.fps"].configure(text=f"{st.fps:.0f}")
+            self.stat_labels["panel.stat.inference"].configure(text=f"{st.inference_ms:.1f}ms")
+            self.stat_labels["panel.stat.count"].configure(text=f"{st.n_detections}")
+            self.stat_labels["panel.stat.lock_conf"].configure(
+                text=f"{st.lock_conf:.2f}" if st.lock_conf else "—")
+            self.error_label.configure(text=st.error)
+            diag = st.diag_message or self._t("panel.diag_default")
+            self.diag_label.configure(
+                text=diag,
+                foreground=(ACCENT_OFF if "✓" in diag
+                            else ACCENT if "✗" in diag else SUBTLE))
+        except tk.TclError:
+            return
+        except Exception:
+            pass
+        try:
+            self.root.after(250, self._refresh_stats)
+        except Exception:
+            pass

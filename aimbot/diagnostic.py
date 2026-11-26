@@ -67,9 +67,10 @@ def _send_smooth(move: MoveFn, dx: int, dy: int, steps: int = 6) -> None:
 
 
 def run_input_diagnostic(grab: GrabFn, move: MoveFn) -> DiagnosticResult:
+    from .i18n import t as _t
     base = grab()
     if base is None:
-        return DiagnosticResult(False, False, 0.0, 0.0, 0.0, "擷取失敗")
+        return DiagnosticResult(False, False, 0.0, 0.0, 0.0, _t("diag.detail.capture_fail"))
     time.sleep(SETTLE_S)
 
     # 水平：右移 → 量測 → 左移回來 → 量測（兩次取平均，抗漂移）
@@ -86,7 +87,7 @@ def run_input_diagnostic(grab: GrabFn, move: MoveFn) -> DiagnosticResult:
     _send_smooth(move, 0, -HY_MICKEYS)
 
     if f1 is None or f2 is None or f3 is None:
-        return DiagnosticResult(False, False, 0.0, 0.0, 0.0, "擷取失敗")
+        return DiagnosticResult(False, False, 0.0, 0.0, 0.0, _t("diag.detail.capture_fail"))
 
     dx1, _, c1 = measure_shift(base, f1)
     dx2, _, c2 = measure_shift(f1, f2)
@@ -94,24 +95,21 @@ def run_input_diagnostic(grab: GrabFn, move: MoveFn) -> DiagnosticResult:
     conf = min(c1, c2, c3)
     if conf < CONF_MIN:
         return DiagnosticResult(False, False, 0.0, 0.0, conf,
-                                "場景缺乏可辨識紋理")
+                                _t("diag.detail.no_texture"))
 
     shift_x = (abs(dx1) + abs(dx2)) / 2.0
     gain_x = shift_x / HX_MICKEYS
     gain_y = abs(dy1) / HY_MICKEYS
     input_ok = gain_x > 0.02  # 150 滑格應至少動 3px
     return DiagnosticResult(input_ok, True, gain_x, gain_y, conf,
-                            f"水平 {dx1:+d}/{dx2:+d}px 垂直 {dy1:+d}px")
+                            _t("diag.detail.shift", dx1=dx1, dx2=dx2, dy1=dy1))
 
 
-def format_result(r: DiagnosticResult) -> str:
+def format_result(r: DiagnosticResult, lang: str | None = None) -> str:
+    from .i18n import t as _t
     if not r.measurable:
-        return ("診斷：？ 無法測量——請對準有紋理的場景（室內／牆面細節），"
-                "在遊戲內可轉視角時按 F9 重試")
+        return _t("diag.unmeasurable", lang=lang)
     if not r.input_ok:
-        return ("診斷：✗ 輸入未到達遊戲（畫面完全沒動）——依序檢查："
-                "① 工具以管理員執行 ② 遊戲設為無邊框視窗 "
-                "③ 點一下遊戲畫面取得焦點 ④ 確認在遊戲內而非選單")
+        return _t("diag.blocked", lang=lang)
     sugg = 1.0 / r.gain_x if r.gain_x > 0.05 else 1.0
-    return (f"診斷：✓ 輸入正常 | 水平 {r.gain_x:.2f} px/滑格 · "
-            f"垂直 {r.gain_y:.2f} | 建議滑鼠靈敏度 ≈ {sugg:.2f}")
+    return _t("diag.ok", lang=lang, gain_x=r.gain_x, gain_y=r.gain_y, sugg=sugg)

@@ -1,0 +1,12 @@
+# Game dataset for fine-tuning YOLO11 person detector.
+# 1) Put labeled images under training/dataset/ (see structure below).
+# 2) Edit train/val paths if yours differ. Keep nc: 1, single class id 0
+#    so detector.py's classes=[0] filter keeps working with no code change.
+
+path: training/dataset          # dataset root (relative to project root)
+train: images/train             # train images (relative to path)
+val: images/val                 # val images (relative to path)
+
+nc: 1
+names:
+  0: person
