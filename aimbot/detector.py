@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .config import PROJECT_ROOT
+from .i18n import t as _t
 
 MODEL_DIR = os.path.join(PROJECT_ROOT, "models")
 PERSON_CLASS_ID = 0  # COCO: person
@@ -58,7 +59,7 @@ class Detector:
         self.model_size = model_size
         self.imgsz = imgsz
         self.confidence = confidence
-        self.backend = "未載入"
+        self.backend = _t("detector.backend.not_loaded")
         self._model = None
         self._use_cuda = False
         self.last_infer_ms = 0.0
@@ -83,7 +84,7 @@ class Detector:
                 m = YOLO(self._engine_path(), task="detect")
                 self._model = m
                 self._use_cuda = True
-                self.backend = "TensorRT FP16"
+                self.backend = _t("detector.backend.tensorrt")
                 return
             except Exception:
                 pass  # 引擎損毀 → 刪除快取重試其他後端
@@ -102,17 +103,17 @@ class Detector:
                     m = YOLO(self._engine_path(), task="detect")
                     self._model = m
                     self._use_cuda = True
-                    self.backend = "TensorRT FP16"
+                    self.backend = _t("detector.backend.tensorrt")
                     return
                 except Exception:
                     pass
             self._model = m
             self._use_cuda = True
-            self.backend = "PyTorch CUDA"
+            self.backend = _t("detector.backend.cuda")
         else:
             self._model = m
             self._use_cuda = False
-            self.backend = "CPU"
+            self.backend = _t("detector.backend.cpu")
 
     def _try_export_engine(self, model) -> None:
         """tensorrt 套件存在時才嘗試匯出；任何失敗都靜默退回 .pt。"""
@@ -206,9 +207,9 @@ class Detector:
         if confidence is not None:
             self.confidence = confidence
         self._model = None
-        self.backend = "載入中…"
+        self.backend = _t("detector.backend.loading")
         try:
             self.load()
         except Exception as e:
-            self.backend = f"載入失敗：{type(e).__name__}"
+            self.backend = _t("detector.backend.load_fail", err=type(e).__name__)
             raise

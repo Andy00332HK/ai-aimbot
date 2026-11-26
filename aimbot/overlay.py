@@ -54,7 +54,11 @@ class Overlay:
         self.get_state = get_state
         self.get_roi_origin = get_roi_origin  # () -> (left, top) ROI 在螢幕上的原點
         self.win = tk.Toplevel(root)
-        self.win.title("AI Aimbot Overlay")
+        try:
+            from .i18n import t as _t
+            self.win.title(_t("overlay.title"))
+        except Exception:
+            self.win.title("AI Aimbot Overlay")
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.attributes("-transparentcolor", TRANSPARENT)
@@ -144,8 +148,15 @@ class Overlay:
                 c.create_oval(tx - 3, ty - 3, tx + 3, ty + 3,
                               outline=COLOR_LOCK, width=2)
         # 狀態列
-        status = (f"FPS {st.fps:.0f}  |  {'ON' if st.active else 'OFF'}  |  "
-                  f"AIM {'HEAD' if cfg.aim_point == 'head' else 'BODY'}")
+        try:
+            from .i18n import t as _t
+            _lang = getattr(cfg, "language", None)
+            _onoff = _t("overlay.on", lang=_lang) if st.active else _t("overlay.off", lang=_lang)
+            _pt = _t("overlay.head", lang=_lang) if cfg.aim_point == "head" else _t("overlay.body", lang=_lang)
+            status = _t("overlay.status", lang=_lang, fps=st.fps, onoff=_onoff, point=_pt)
+        except Exception:
+            status = (f"FPS {st.fps:.0f}  |  {'ON' if st.active else 'OFF'}  |  "
+                      f"AIM {'HEAD' if cfg.aim_point == 'head' else 'BODY'}")
         c.create_text(8, 6, text=status, anchor="nw", fill=COLOR_STATUS,
                       font=("Segoe UI", 10, "bold"))
 

@@ -13,11 +13,36 @@ MODEL_SIZES = ("n", "s")
 IMGSZ_CHOICES = (320, 416, 640)
 MOUSE_BUTTONS = ("left", "right", "middle", "x1", "x2")
 MOUSE_BACKENDS = ("auto", "sendinput", "interception")
-MOUSE_BACKEND_LABELS = {
-    "auto": "自動（Interception 優先）",
-    "sendinput": "SendInput（標準）",
-    "interception": "Interception（驅動級）",
-}
+LANGUAGES = ("zh", "en")
+
+
+def _tr(key: str) -> str:
+    try:
+        from .i18n import t as _t
+        return _t(key)
+    except Exception:
+        return key
+
+
+def get_mouse_backend_labels(lang: str | None = None):
+    try:
+        from .i18n import label_map as _lm
+        return _lm("config.enum.mouse_backend", MOUSE_BACKENDS, lang=lang)
+    except Exception:
+        return {b: b for b in MOUSE_BACKENDS}
+
+
+# Legacy aliases (kept for compat; values resolve via locale files, no hardcoded CJK here).
+# Panel code should use label_map() for live language switch instead of these statics.
+def _mouse_backend_labels_snapshot():
+    return {
+        "auto": _tr("config.enum.mouse_backend.auto"),
+        "sendinput": _tr("config.enum.mouse_backend.sendinput"),
+        "interception": _tr("config.enum.mouse_backend.interception"),
+    }
+
+
+MOUSE_BACKEND_LABELS = _mouse_backend_labels_snapshot()
 
 # 舊版 hold_key 值 → 新格式（kb:鍵名 / mouse:按鍵名）
 _LEGACY_HOLD = {
@@ -29,17 +54,14 @@ _LEGACY_HOLD = {
     "mouse_x2": "mouse:x2",
 }
 
-_KB_LABELS = {
-    "shift": "Shift", "ctrl": "Ctrl", "alt": "Alt", "space": "空白鍵",
-    "caps_lock": "Caps Lock", "tab": "Tab", "enter": "Enter",
-    "backspace": "Backspace", "delete": "Delete", "insert": "Insert",
-    "home": "Home", "end": "End", "page_up": "Page Up", "page_down": "Page Down",
-    "up": "↑", "down": "↓", "left": "←", "right": "→",
-}
-_MOUSE_LABELS = {
-    "left": "滑鼠左鍵", "right": "滑鼠右鍵", "middle": "滑鼠中鍵",
-    "x1": "滑鼠側鍵 X1", "x2": "滑鼠側鍵 X2",
-}
+_KB_KEYS = ("shift", "ctrl", "alt", "space", "caps_lock", "tab", "enter",
+              "backspace", "delete", "insert", "home", "end", "page_up",
+              "page_down", "up", "down", "left", "right")
+_MOUSE_BTN_KEYS = ("left", "right", "middle", "x1", "x2")
+
+# Legacy snapshots (values from locale files; source holds no CJK).
+_KB_LABELS = {k: _tr(f"config.enum.key.{k}") for k in _KB_KEYS}
+_MOUSE_LABELS = {k: _tr(f"config.enum.mouse_button.{k}") for k in _MOUSE_BTN_KEYS}
 
 
 def normalize_hold_key(k) -> str:
@@ -58,15 +80,30 @@ def normalize_hold_key(k) -> str:
     return "kb:shift"
 
 
-def hold_key_label(k) -> str:
+def hold_key_label(k, lang: str | None = None) -> str:
     """啟動鍵的人類可讀標籤（面板顯示用）。"""
+    from .i18n import t as _t
     k = normalize_hold_key(k)
     if k.startswith("mouse:"):
-        return _MOUSE_LABELS.get(k[6:], k)
+        btn = k[6:]
+        v = _t(f"config.enum.mouse_button.{btn}", lang=lang)
+        return v if not v.startswith("config.enum.") else _MOUSE_LABELS.get(btn, k)
     name = k[3:]
-    return _KB_LABELS.get(name, name.upper())
+    v = _t(f"config.enum.key.{name}", lang=lang)
+    return v if not v.startswith("config.enum.") else _KB_LABELS.get(name, name.upper())
 AIM_POINTS = ("head", "body")
-AIM_POINT_LABELS = {"head": "頭部", "body": "胸口"}
+
+
+def get_aim_point_labels(lang: str | None = None):
+    try:
+        from .i18n import label_map as _lm
+        return _lm("config.enum.aim_point", AIM_POINTS, lang=lang)
+    except Exception:
+        return {a: a for a in AIM_POINTS}
+
+
+AIM_POINT_LABELS = {"head": _tr("config.enum.aim_point.head"),
+                    "body": _tr("config.enum.aim_point.body")}
 
 
 @dataclass(frozen=True)
@@ -78,6 +115,7 @@ class Config:
     imgsz: int = 640               # 推論輸入尺寸 320 / 416 / 640
     confidence: float = 0.45       # 偵測信心度門檻 0.05–0.95
     capture_backend: str = "auto"  # auto / dxcam / mss
+    monitor_index: int = 0         # 0=主螢幕，1/2…=副螢幕（主螢幕排第一）
     # ── 掃描範圍 / 顯示 ──
     roi_size: int = 640            # ROI 邊長 px（螢幕正中央）
     grid_cells: int = 8            # 網格密度（每邊格數）
@@ -100,6 +138,8 @@ class Config:
     aim_switch_key: str = "f7"
     quit_key: str = "f8"
     diag_key: str = "f9"           # 輸入診斷（遊戲內按）
+    # ── 語言 ──
+    language: str = "zh"           # "zh" 繁中 / "en" English
 
     def sanitized(self) -> "Config":
         """夾限所有數值到合法範圍，未知列舉回退預設。"""
@@ -108,6 +148,11 @@ class Config:
             c = replace(c, model_size="n")
         if c.capture_backend not in ("auto", "dxcam", "mss"):
             c = replace(c, capture_backend="auto")
+        try:
+            mi = int(c.monitor_index)
+        except Exception:
+            mi = 0
+        c = replace(c, monitor_index=max(0, min(8, mi)))
         if c.mouse_backend not in MOUSE_BACKENDS:
             c = replace(c, mouse_backend="auto")
         c = replace(c, imgsz=min(IMGSZ_CHOICES, key=lambda v: abs(v - c.imgsz)))
@@ -127,6 +172,8 @@ class Config:
         if c.activation_mode not in ("hold", "toggle"):
             c = replace(c, activation_mode="hold")
         c = replace(c, hold_key=normalize_hold_key(c.hold_key))
+        if getattr(c, "language", "zh") not in LANGUAGES:
+            c = replace(c, language="zh")
         return c
 
 

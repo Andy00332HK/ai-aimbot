@@ -102,17 +102,20 @@ class InterceptionMouse(_MouseBase):
         try:
             from interception import Interception, MouseFlag, MouseStroke
         except ImportError:
-            raise InterceptionUnavailable("未安裝 interception-python 套件") from None
+            from .i18n import t as _t
+            raise InterceptionUnavailable(_t("mouse.error.no_package")) from None
 
         self._stroke = MouseStroke
         self._flag = MouseFlag.MOUSE_MOVE_RELATIVE
         self._ctx = Interception()
         if not self._ctx.valid:
-            raise InterceptionUnavailable("驅動未安裝或尚未重新開機")
+            from .i18n import t as _t
+            raise InterceptionUnavailable(_t("mouse.error.no_driver"))
         dev = next((n for n in range(10, 20)
                     if self._ctx.devices[n].get_HWID() is not None), None)
         if dev is None:
-            raise InterceptionUnavailable("找不到已連接的滑鼠裝置")
+            from .i18n import t as _t
+            raise InterceptionUnavailable(_t("mouse.error.no_device"))
         self._dev = dev
         self._ctx.mouse = dev
 
@@ -137,11 +140,13 @@ def create_mouse(preferred: str = "auto") -> _MouseBase:
         try:
             return InterceptionMouse()
         except InterceptionUnavailable as e:
+            from .i18n import t as _t
             m = SendInputMouse()
-            m.backend_name = f"SendInput（Interception：{e}）"
+            m.backend_name = _t("mouse.error.fallback_reason", e=str(e))
             return m
         except Exception as e:
+            from .i18n import t as _t
             m = SendInputMouse()
-            m.backend_name = f"SendInput（Interception 載入失敗：{type(e).__name__}）"
+            m.backend_name = _t("mouse.error.fallback_load_fail", err=type(e).__name__)
             return m
     return SendInputMouse()

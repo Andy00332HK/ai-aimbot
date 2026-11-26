@@ -32,21 +32,43 @@ class EngineState:
     lock_point: tuple[float, float] | None = None
     lock_box: tuple[float, float, float, float] | None = None
     active: bool = False
-    backend: str = "載入中…"
-    capture_backend: str = "載入中…"
-    mouse_backend: str = "載入中…"
-    diag_message: str = "輸入診斷：遊戲內按 F9（畫面需可轉視角）"
+    backend: str = ""
+    capture_backend: str = ""
+    mouse_backend: str = ""
+    diag_message: str = ""
     aim_point_mode: str = "head"
     model_ready: bool = False
     error: str = ""
 
 
+def _tr(key: str, lang: str | None = None, **kw) -> str:
+    try:
+        from .i18n import t as _t
+        return _t(key, lang=lang, **kw)
+    except Exception:
+        return key
+
+
+def default_engine_state(lang: str | None = None) -> "EngineState":
+    return EngineState(
+        backend=_tr("engine.state.loading", lang=lang),
+        capture_backend=_tr("engine.state.loading", lang=lang),
+        mouse_backend=_tr("engine.state.loading", lang=lang),
+        diag_message=_tr("engine.state.diag_default", lang=lang),
+    )
+
+
 class AimEngine:
     def __init__(self, config_manager: ConfigManager):
         self.cm = config_manager
-        self.state = EngineState()
+        try:
+            _lang = getattr(self.cm.get(), "language", "zh")
+        except Exception:
+            _lang = "zh"
+        self.state = default_engine_state(_lang)
         self.capture = None
         self._capture_pref = "auto"
+        self._monitor_pref = 0
         self.detector = Detector()
         self._mouse_pref = self.cm.get().mouse_backend
         self.mouse = create_mouse(self._mouse_pref)
@@ -193,7 +215,9 @@ class AimEngine:
     def _run(self) -> None:
         cfg = self.cm.get()
         self._capture_pref = cfg.capture_backend
-        self.capture = create_capture(cfg.roi_size, preferred=cfg.capture_backend)
+        self._monitor_pref = int(getattr(cfg, "monitor_index", 0))
+        self.capture = create_capture(cfg.roi_size, preferred=cfg.capture_backend,
+                                      monitor_index=self._monitor_pref)
         ema_dt = 0.0
         while not self._stop.is_set():
             try:
@@ -206,24 +230,32 @@ class AimEngine:
                 # 輸入診斷（在引擎執行緒內執行：不與瞄準競爭滑鼠）
                 if self._diag_requested.is_set():
                     self._diag_requested.clear()
+                    try:
+                        _lang = getattr(self.cm.get(), "language", "zh")
+                    except Exception:
+                        _lang = "zh"
                     self.state = replace(
                         self.state,
-                        diag_message="輸入診斷進行中…（會小幅轉動視角後轉回）")
+                        diag_message=_tr("engine.state.diag_running", lang=_lang))
                     try:
                         from .diagnostic import format_result, run_input_diagnostic
                         res = run_input_diagnostic(
                             self.capture.grab,
                             lambda dx, dy: self.mouse.move_relative(dx, dy))
-                        msg = format_result(res)
+                        msg = format_result(res, lang=_lang)
                     except Exception as e:
-                        msg = f"診斷失敗：{type(e).__name__}: {e}"
+                        msg = _tr("engine.state.diag_fail", lang=_lang,
+                                  err=f"{type(e).__name__}: {e}")
                     self.state = replace(self.state, diag_message=msg)
-                # 擷取後端切換（面板下拉）→ 重建擷取器
-                if cfg.capture_backend != self._capture_pref:
+                # 擷取後端／螢幕切換（面板下拉）→ 重建擷取器
+                cur_mon = int(getattr(cfg, "monitor_index", 0))
+                if cfg.capture_backend != self._capture_pref or cur_mon != self._monitor_pref:
                     self._capture_pref = cfg.capture_backend
+                    self._monitor_pref = cur_mon
                     self.capture.close()
                     self.capture = create_capture(cfg.roi_size,
-                                                   preferred=cfg.capture_backend)
+                                                   preferred=cfg.capture_backend,
+                                                   monitor_index=cur_mon)
                 # 注入後端切換（面板下拉）→ 重建注入器
                 if cfg.mouse_backend != self._mouse_pref:
                     self._mouse_pref = cfg.mouse_backend

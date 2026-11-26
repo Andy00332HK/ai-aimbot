@@ -24,7 +24,11 @@ def _enable_dpi_awareness() -> None:
 
 def main() -> int:
     if sys.platform != "win32":
-        print("此工具目前僅支援 Windows。")
+        try:
+            from aimbot.i18n import t as _t
+            print(_t("main.windows_only"))
+        except Exception:
+            print("This tool currently supports Windows only.")
         return 1
 
     _enable_dpi_awareness()
@@ -44,11 +48,18 @@ def main() -> int:
     def get_roi_origin() -> tuple[int, int]:
         if engine.capture is not None:
             return engine.capture.roi_origin
-        # 引擎尚未就緒：以主螢幕幾何估算
-        sw = root.winfo_screenwidth()
-        sh = root.winfo_screenheight()
-        roi = cm.get().roi_size
-        return (sw - roi) // 2, (sh - roi) // 2
+        # 引擎尚未就緒：以所選螢幕幾何估算（0=主螢幕）
+        try:
+            from aimbot.capture import get_monitor
+            mon = get_monitor(int(getattr(cm.get(), "monitor_index", 0)))
+            roi = cm.get().roi_size
+            eff = min(roi, max(200, min(mon["width"], mon["height"]) - 40))
+            return mon["left"] + (mon["width"] - eff) // 2, mon["top"] + (mon["height"] - eff) // 2
+        except Exception:
+            sw = root.winfo_screenwidth()
+            sh = root.winfo_screenheight()
+            roi = cm.get().roi_size
+            return (sw - roi) // 2, (sh - roi) // 2
 
     overlay = Overlay(root, cm.get, lambda: engine.state, get_roi_origin)
 
