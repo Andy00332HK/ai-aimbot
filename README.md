@@ -2,6 +2,8 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![CUDA](https://img.shields.io/badge/CUDA-12.x-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
+[English](README_EN.md) | [繁體中文](README.md)
+
 即時物件偵測輔助瞄準工具：擷取螢幕中央 ROI → YOLO11 偵測人形敵人 → 透明覆蓋層顯示偵測框 → 平滑移動滑鼠輔助瞄準。
 
 > ⚠️ **重要聲明**：本工具**僅供單機／離線遊戲使用**。用於任何連線／多人遊戲皆違反遊戲服務條款、
